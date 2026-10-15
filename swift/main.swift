@@ -17,7 +17,7 @@ if let f = arg("--meta").first {   // prova: cerca i dati del film dal nome del 
     if let m = fetchMovieMeta(for: u) { print("trovato \(m.wikidataID): «\(m.title)» (\(m.originalTitle ?? "—")) \(m.year.map(String.init) ?? "—") · \(m.directors.joined(separator: ", ")) · \(m.runtimeMin.map { "\(Int($0)) min" } ?? "durata ?") · lingua \(m.originalLang ?? "?") · poster \(m.posterURL != nil ? "sì" : "no")\nnome libreria: \(m.libraryName)\n\(String((m.summary ?? "").prefix(160)))") } else { print("non trovato") }
     exit(0)
 }
-// Correzioni da riga di comando (per i test): --fix FILE [--audio-default N] [--sub-default none|N] [--lang a0=ita,s1=eng] [--clean-sub N] [--drop-sub N] [--drop-audio N] [--trim-start S] [--trim-end S] [--normalize N]   (N parte da 0)
+// Correzioni da riga di comando (per i test): --fix FILE [--audio-default N] [--sub-default none|N] [--lang a0=ita,s1=eng] [--clean-sub N] [--drop-sub N] [--drop-audio N] [--erase-text] [--normalize N]   (N parte da 0)
 if let f = arg("--fix").first {
     var p = FixPlan()
     p.audioDefault = arg("--audio-default").first.flatMap { Int($0) }
@@ -25,7 +25,8 @@ if let f = arg("--fix").first {
     for l in arg("--lang") { for kv in l.split(separator: ",") { let x = kv.split(separator: "="); if x.count == 2 { p.lang[String(x[0])] = String(x[1]) } } }
     arg("--clean-sub").compactMap { Int($0) }.forEach { p.cleanSubs.insert($0) }; arg("--drop-sub").compactMap { Int($0) }.forEach { p.dropSubs.insert($0) }
     arg("--drop-audio").compactMap { Int($0) }.forEach { p.dropAudio.insert($0) }; arg("--normalize").compactMap { Int($0) }.forEach { p.normalize.insert($0) }; if let r = arg("--rename").first { p.rename = r }; arg("--repair-sub").compactMap { Int($0) }.forEach { p.repairSubs.insert($0) }; for v in arg("--forced") { let x = v.split(separator: ":"); if x.count == 2, let i = Int(x[0]) { p.forcedFlags[i] = x[1] == "1" } }; if CommandLine.arguments.contains("--tonemap") { p.tonemap = true }; if CommandLine.arguments.contains("--deinterlace") { p.deinterlace = true }; for v in arg("--sync-sub") { let x = v.split(separator: ":").compactMap { Double($0) }; if x.count == 3 { p.syncSubs[Int(x[0])] = (x[1], x[2]) } }; if CommandLine.arguments.contains("--clear-title") { p.clearTitle = true }; arg("--dolby").compactMap { Int($0) }.forEach { p.toDolby.insert($0) }; arg("--level").compactMap { Int($0) }.forEach { p.levelGain.insert($0) }; if let d = arg("--boost-db").first.flatMap({ Double($0) }) { p.centerDB = d }; arg("--boost-center").compactMap { Int($0) }.forEach { p.boostCenter.insert($0) }
-    p.trimStart = arg("--trim-start").first.flatMap { Double($0) }; p.trimEnd = arg("--trim-end").first.flatMap { Double($0) }
+    for v in arg("--erase-at") { let n = v.split(separator: ",").compactMap { Double($0) }; if n.count == 6 { p.eraseText.append(EraseRegion(x: n[0], y: n[1], w: n[2], h: n[3], from: n[4], to: n[5], label: "prova")) } }   // prova: x,y,w,h (frazioni, origine in alto a sinistra),da,a
+    if CommandLine.arguments.contains("--erase-text") { analyze(URL(fileURLWithPath: f)) { _, _ in }.findings.flatMap(\.fixes).forEach { if case .eraseText = $0 { p.merge($0) } } }   // cancella le scritte pubblicitarie che l'analisi trova nei primi secondi
     // di default il risultato è una copia «… (corretto)» accanto al file: l'originale non viene mai toccato. --output PATH sceglie il nome, --replace modifica il file indicato (solo per copie già corrette e per i test)
     let src = URL(fileURLWithPath: f), replace = CommandLine.arguments.contains("--replace")
     var p2 = p; let nb = p2.rename; p2.rename = nil; if let t = arg("--set-title").first { p2.setTitle = t } else if let n = nb { p2.setTitle = n }

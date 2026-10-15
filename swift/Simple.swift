@@ -15,7 +15,7 @@ func fixLabel(_ h: FixHint) -> String {
     case .levelGain: return "Regola il volume"
     case .boostCenter: return "Alza i dialoghi"
     case .normalize: return "Compressione"
-    case .trimStart, .trimEnd: return "Taglia"
+    case .eraseText: return "Togli la scritta"
     case .deinterlace: return "Deinterlaccia"
     case .tonemap: return "Converti in SDR"
     case .clearTitle: return "Togli il titolo"

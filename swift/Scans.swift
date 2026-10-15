@@ -84,9 +84,9 @@ func scanVideoWindows(_ pr: Probe, _ path: String, _ c: Collector, progress: @es
         c.rows("Video", order: 1, [("Immagine utile", "\(p[0])×\(p[1])")])
     }
     // neri e fermi immagine
-    for b in res[0].blacks where b.0 < 1 && b.1 > 8 { c.add(.warn, "Video", String(format: "Nero iniziale lungo (%.0f s)", b.1), "Lo schermo resta nero prima che parta il film.", time: 0, fix: [.trimStart(b.0 + b.1)]) }
+    for b in res[0].blacks where b.0 < 1 && b.1 > 8 { c.add(.warn, "Video", String(format: "Nero iniziale lungo (%.0f s)", b.1), "Lo schermo resta nero prima che parta il film.", time: 0) }
     if let b = res[0].blacks.first, b.1 >= 59 { c.add(.error, "Video", "Immagine nera nei primi 60 secondi", "Il video sembra vuoto all'inizio.", time: 0) }
-    if let b = res[2].blacks.last, b.0 + b.1 >= d - 2, b.1 > 20 { c.add(.warn, "Video", String(format: "Nero finale lungo (%.0f s)", b.1), "Dopo la fine il film resta nero a lungo.", time: b.0, fix: [.trimEnd(b.0)]) }
+    if let b = res[2].blacks.last, b.0 + b.1 >= d - 2, b.1 > 20 { c.add(.warn, "Video", String(format: "Nero finale lungo (%.0f s)", b.1), "Dopo la fine il film resta nero a lungo.", time: b.0) }
     if let b = res[1].blacks.first(where: { $0.1 > 5 }) { c.add(.warn, "Video", String(format: "Schermo nero di %.0f s a metà film", b.1), "Se non è voluto può indicare un pezzo mancante o un errore di codifica.", time: b.0) }
     for (i, r) in res.enumerated() { if let f = r.freezes.first(where: { $0.1 > 8 }) { c.add(.info, "Video", String(format: "Immagine ferma per %.0f s (%@)", f.1, wins[i].0), "Fermo immagine o scheda fissa.", time: f.0) } }
     let q = res.filter { $0.qn > 100 }
@@ -112,27 +112,41 @@ func scanCredits(_ pr: Probe, _ path: String, _ tmp: URL, _ c: Collector, progre
         for (i, f) in files.enumerated() { frames.append((tmp.appendingPathComponent(f), w.1 + Double(i) * w.3)) }
     }
     progress(0.4)
-    var hits: [(Double, String, URL)] = []; let lock = NSLock(); var done = 0
+    var hits: [(t: Double, text: String, url: URL, boxes: [(String, CGRect)])] = []; let lock = NSLock(); var done = 0
     DispatchQueue.concurrentPerform(iterations: frames.count) { i in
-        let (u, t) = frames[i]; let req = VNRecognizeTextRequest(); req.recognitionLevel = .accurate; req.usesLanguageCorrection = false
-        try? VNImageRequestHandler(url: u).perform([req])
-        let obs = (req.results ?? []).compactMap { o in o.topCandidates(1).first.map { ($0.string, o.boundingBox) } }
-        let text = obs.map(\.0).joined(separator: " | ")
-        // firma del rilasciatore: una riga isolata «By Nome» nella parte bassa dello schermo (es. «By Licdom»)
-        let sig = t >= 60 ? nil : obs.first { $0.1.minY < 0.25 && $0.0.has(#"^\s*by\s+[^\s|]{3,24}\s*$"#) }?.0
-        if text.has(adPattern) || sig != nil { lock.lock(); hits.append((t, sig != nil && !text.has(adPattern) ? "\(sig!) | " + text : text, u)); lock.unlock() }
+        let (u, t) = frames[i]
+        if let h = creditHits(in: u, t: t) { lock.lock(); hits.append((t, h.text, u, h.boxes)); lock.unlock() }
         lock.lock(); done += 1; let f = Double(done) / Double(max(frames.count, 1)); lock.unlock(); progress(0.4 + 0.6 * f)
     }
     // una segnalazione per ogni gruppo di fotogrammi vicini; la miniatura va copiata prima che la cartella temporanea sparisca
     let outDir = FileManager.default.temporaryDirectory.appendingPathComponent("moviepreflight-thumbs"); try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
-    var lastT = -100.0
-    let startEnd = (hits.filter { $0.0 < 60 }.map(\.0).max() ?? 0) + 2.5, endBegin = (hits.filter { $0.0 >= 60 }.map(\.0).min() ?? d) - 3.5   // margine: i fotogrammi sono campionati ogni 1,5 / 3 s
-    for h in hits.sorted(by: { $0.0 < $1.0 }) {
-        if h.0 - lastT < 6 { continue }; lastT = h.0
-        let dest = outDir.appendingPathComponent(UUID().uuidString + ".jpg"); try? FileManager.default.copyItem(at: h.2, to: dest)
-        let where_ = h.0 < 60 ? "nei primi secondi" : "verso la fine"
-        c.add(.error, "Video", "Scritta pubblicitaria o crediti del torrent nell'immagine (\(where_))", "Testo rilevato: «\(String(h.1.prefix(140)))» — ha fatto scattare: «\(h.1.found(adPattern) ?? "")»", time: h.0, thumb: dest, fix: [h.0 < 60 ? .trimStart(startEnd) : .trimEnd(endBegin)])
+    var groups: [[(t: Double, text: String, url: URL, boxes: [(String, CGRect)])]] = []
+    for h in hits.sorted(by: { $0.t < $1.t }) { if let l = groups.last?.last, h.t - l.t < 6 { groups[groups.count - 1].append(h) } else { groups.append([h]) } }
+    for grp in groups {
+        let h = grp[0]
+        let dest = outDir.appendingPathComponent(UUID().uuidString + ".jpg"); try? FileManager.default.copyItem(at: h.url, to: dest)
+        let where_ = h.t < 60 ? "nei primi secondi" : "verso la fine"
+        var fixes: [FixHint] = []
+        let boxes = grp.flatMap(\.boxes)
+        if h.t < 60, !boxes.isEmpty {   // nei primi secondi la scritta si può cancellare dall'immagine (rettangolo che contiene tutte le sue posizioni)
+            let u = boxes.map(\.1).reduce(boxes[0].1) { $0.union($1) }
+            fixes = [.eraseText(EraseRegion(x: Double(u.minX), y: Double(1 - u.maxY), w: Double(u.width), h: Double(u.height), from: max(0, h.t - 1.6), to: grp.last!.t + 1.6, label: boxes[0].0.trimmingCharacters(in: CharacterSet(charactersIn: " !.|"))))]
+        }
+        c.add(.error, "Video", "Scritta pubblicitaria o crediti del torrent nell'immagine (\(where_))", "Testo rilevato: «\(String(h.text.prefix(140)))» — ha fatto scattare: «\(boxes.first?.0 ?? h.text.found(adPattern) ?? "")»", time: h.t, thumb: dest, fix: fixes)
     }
+}
+
+/// Riconosce con l'OCR le scritte da rimuovere in un fotogramma: pubblicità/nomi di gruppi (adPattern) e, nei primi 60 s, la firma «By Nome» isolata in basso.
+/// Restituisce tutto il testo letto e i rettangoli (normalizzati, origine in basso a sinistra) delle scritte da togliere; nil se non c'è nulla.
+func creditHits(in u: URL, t: Double) -> (text: String, boxes: [(String, CGRect)])? {
+    let req = VNRecognizeTextRequest(); req.recognitionLevel = .accurate; req.usesLanguageCorrection = false
+    try? VNImageRequestHandler(url: u).perform([req])
+    let obs = (req.results ?? []).compactMap { o in o.topCandidates(1).first.map { ($0.string, o.boundingBox) } }
+    let text = obs.map(\.0).joined(separator: " | ")
+    var boxes = obs.filter { $0.0.has(adPattern) }.map { ($0.0, $0.1) }
+    if t < 60 { boxes += obs.filter { $0.1.minY < 0.25 && $0.0.has(#"^\s*by\s+[^\s|]{3,24}\s*$"#) && !$0.0.has(adPattern) }.map { ($0.0, $0.1) } }
+    if boxes.isEmpty && text.has(adPattern) { return (text, []) }   // testo spezzato fra più righe: segnalato ma senza rettangolo
+    return boxes.isEmpty ? nil : (text, boxes)
 }
 
 // MARK: caratteri rovinati (doppia codifica UTF-8 → Windows-1252 → UTF-8)

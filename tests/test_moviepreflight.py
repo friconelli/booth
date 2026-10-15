@@ -41,6 +41,11 @@ try:
     out = os.path.join(T, "ad.mkv")
     ff("-f", "lavfi", "-i", f"testsrc2=s=640x360:r=25:d={D}", "-i", os.path.join(T, "card.png"), "-f", "lavfi", "-i", "sine=f=300:d=%d" % D, "-filter_complex", "[1]scale=640:360[c];[0][c]overlay=enable='between(t,2,7)'[v]", "-map", "[v]", "-map", "2:a", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", out)
     o = analyze(out); check("[PROBLEMA] Video: Scritta pubblicitaria" in o and "yts" in o.lower(), "scritta www.YTS.mx nei primi secondi rilevata dall'OCR")
+    import hashlib; h_ad = hashlib.sha256(open(out, "rb").read()).hexdigest(); d_ad = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", out], capture_output=True, text=True).stdout)
+    r_ad = subprocess.run([BIN, "--fix", out, "--erase-text"], capture_output=True, text=True); cc = out.replace(".mkv", " (corretto).mkv")
+    check(r_ad.returncode == 0 and os.path.exists(cc) and hashlib.sha256(open(out, "rb").read()).hexdigest() == h_ad, "scritta cancellata: nasce «… (corretto)» e l'originale è identico byte per byte")
+    d_cc = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", cc], capture_output=True, text=True).stdout) if os.path.exists(cc) else 0
+    check(abs(d_cc - d_ad) < 1 and "Scritta pubblicitaria" not in analyze(cc), f"scritta sparita dall'immagine e film non accorciato ({d_cc:.1f} s su {d_ad:.1f})")
 
     print("== sottotitoli")
     cues = [(i * 3 + 1, x) for i, x in enumerate(IT[:25])] + [(i * 3 + 80, x) for i, x in enumerate(EN[:12])] + [(5, "Subtitles by www.opensubtitles.org")]
@@ -93,10 +98,10 @@ try:
     check(all(x["disposition"]["default"] == 0 for x in ss) and ss[1]["tags"]["language"] == "fre", "nessun sottotitolo predefinito e lingua impostata")
     check(not os.path.exists(f.replace(".mkv", ".orig_backup.mkv")), "solo etichette: nessuna copia di backup")
     f = two("fix2.mkv"); full = float(probe(f)["format"]["duration"]); orig2 = f; h2 = sha(orig2)
-    rc, o = fixcopy(f, "--clean-sub", "0", "--trim-start", "4", "--trim-end", "120", "--normalize", "0")
+    rc, o = fixcopy(f, "--clean-sub", "0", "--normalize", "0")
     f = orig2.replace(".mkv", " (corretto).mkv"); np = probe(f) if os.path.exists(f) else {"format": {"duration": "0"}}
     check(rc == 0 and os.path.exists(f) and sha(orig2) == h2, "correzione di contenuto: nasce «… (corretto)» e l'originale è identico byte per byte")
-    check(float(np["format"]["duration"]) < full - 14 and float(np["format"]["duration"]) > 100, f"taglio ai fotogrammi chiave (durata {float(np['format']['duration']):.0f} s su {full:.0f})")
+    check(abs(float(np["format"]["duration"]) - full) < 1, f"il film non viene accorciato (durata {float(np['format']['duration']):.0f} s su {full:.0f})")
     check([x["codec_name"] for x in tracks(f, "audio")][0] == "ac3" and tracks(f, "audio")[1]["codec_name"] == "aac", "solo la traccia scelta è ricodificata")
     cues = subprocess.run(["ffmpeg", "-v", "error", "-i", f, "-map", "0:s:0", "-f", "srt", "-"], capture_output=True, text=True).stdout
     check("opensubtitles" not in cues and "Questa è una frase" in cues, "pubblicità tolta dai sottotitoli, il resto resta")
@@ -106,7 +111,6 @@ try:
     check(rc == 0 and len(tracks(f, "audio")) == 1 and len(tracks(f, "subtitle")) == 1, "tracce eliminate")
     f = two("fix4.mkv"); rc, o = fix(f, "--drop-audio", "0", "--drop-audio", "1"); check(rc != 0 and len(tracks(f, "audio")) == 2, "non si eliminano tutte le tracce audio")
     rc, o = fix(f, "--audio-default", "5"); check(rc != 0, "traccia predefinita inesistente rifiutata")
-    rc, o = fixcopy(f, "--trim-start", "100000"); check(rc != 0 and not os.path.exists(f.replace(".mkv", " (corretto).mkv")), "taglio impossibile: nessuna copia creata")
     print("== l'originale non si tocca mai")
     o1 = two("intatto.mkv"); h1 = sha(o1); rc, o = fixcopy(o1, "--audio-default", "1", "--lang", "s1=fra", "--forced", "0:1"); c1 = o1.replace(".mkv", " (corretto).mkv")
     check(rc == 0 and os.path.exists(c1) and sha(o1) == h1, "solo etichette: copia «(corretto)» creata, originale identico byte per byte")

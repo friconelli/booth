@@ -6,10 +6,6 @@ private let commonLangs: [(String, String)] = [("ita", "italiano"), ("eng", "ing
 struct FixSheet: View {
     @ObservedObject var job: Job; let report: Report; @State var plan: FixPlan; let store: Store; @Environment(\.dismiss) private var dismiss
     @State private var showAdv = false
-    @State private var trimS = false
-    @State private var trimE = false
-    @State private var sText = ""
-    @State private var eText = ""
     var url: URL { job.url }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -61,11 +57,6 @@ struct FixSheet: View {
                     Toggle("Rimuovi l'interlacciamento (bwdif)", isOn: $plan.deinterlace)
                     Text("Ricodifica l'immagine con codec ad alta qualità: può durare quanto il film. Dopo la scrittura l'app misura la qualità (VMAF) e annulla tutto se l'immagine peggiora.").font(.caption).foregroundStyle(.secondary)
                 }
-                group("Taglio (senza ricodificare l'immagine)") {
-                    HStack { Toggle("Togli l'inizio fino a", isOn: $trimS); TextField("secondi", text: $sText).frame(width: 80).textFieldStyle(.roundedBorder).disabled(!trimS); Text("s") }
-                    HStack { Toggle("Togli la fine a partire da", isOn: $trimE); TextField("secondi", text: $eText).frame(width: 80).textFieldStyle(.roundedBorder).disabled(!trimE); Text("s (il film dura \(Int(report.duration)) s)") }
-                    Text("Il taglio cade sul fotogramma chiave più vicino verso l'interno, quindi può togliere qualche secondo in più.").font(.caption).foregroundStyle(.secondary)
-                }
             }.padding(20) }
             Divider()
             VStack(alignment: .leading, spacing: 6) {
@@ -80,12 +71,7 @@ struct FixSheet: View {
             }.padding(16)
         }
     }
-    var effective: FixPlan {
-        var p = plan
-        p.trimStart = trimS ? Double(sText.replacingOccurrences(of: ",", with: ".")).flatMap { $0 > 0 ? $0 : nil } : nil
-        p.trimEnd = trimE ? Double(eText.replacingOccurrences(of: ",", with: ".")).flatMap { $0 > 60 ? $0 : nil } : nil
-        return p
-    }
+    var effective: FixPlan { plan }
     func label(_ t: TrackInfo) -> String { "\(t.ord + 1) · \(langLabel(t.lang))\(t.forced ? " (forzati)" : "") · \(t.codec.uppercased())\(t.channels > 0 ? " \(t.channels)ch" : "")" + (t.title.isEmpty ? "" : " · \(t.title)") }
     func group<C: View>(_ title: String, @ViewBuilder _ c: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 8) { Text(title).font(.headline); c() }

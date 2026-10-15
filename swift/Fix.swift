@@ -18,8 +18,8 @@ struct FixPlan {
     var deinterlace = false                            // deinterlacciamento dell'immagine (ricodifica del video)
     var centerDB = 4.0                                 // quanto alzare il canale centrale
     var audioTouched: Set<Int> { normalize.union(boostCenter).union(levelGain).union(toDolby) }
-    var trimStart: Double?, trimEnd: Double?          // taglia i primi N secondi / dal secondo N alla fine
-    var changesContent: Bool { !cleanSubs.isEmpty || !dropSubs.isEmpty || !dropAudio.isEmpty || !normalize.isEmpty || !boostCenter.isEmpty || !levelGain.isEmpty || !toDolby.isEmpty || !syncSubs.isEmpty || !repairSubs.isEmpty || deinterlace || tonemap || trimStart != nil || trimEnd != nil }
+    var eraseText: [EraseRegion] = []                  // scritte da cancellare dall'immagine (ricodifica solo il tratto in cui compaiono)
+    var changesContent: Bool { !cleanSubs.isEmpty || !dropSubs.isEmpty || !dropAudio.isEmpty || !normalize.isEmpty || !boostCenter.isEmpty || !levelGain.isEmpty || !toDolby.isEmpty || !syncSubs.isEmpty || !repairSubs.isEmpty || deinterlace || tonemap || !eraseText.isEmpty }
     var isEmpty: Bool { !changesContent && !clearTitle && setTitle == nil && audioDefault == nil && subDefault == .keep && lang.isEmpty && forcedFlags.isEmpty }
     mutating func merge(_ h: FixHint) {
         switch h {
@@ -28,8 +28,7 @@ struct FixPlan {
         case .setLang(let k, let i): lang["\(k)\(i)"] = lang["\(k)\(i)"] ?? "ita"
         case .cleanSub(let i): cleanSubs.insert(i)
         case .dropSub(let i): dropSubs.insert(i)
-        case .trimStart(let t): trimStart = t
-        case .trimEnd(let t): trimEnd = t
+        case .eraseText(let r): eraseText.append(r)
         case .normalize(let i): normalize.insert(i)
         case .boostCenter(let i): boostCenter.insert(i)
         case .levelGain(let i): levelGain.insert(i)
@@ -68,8 +67,7 @@ extension FixPlan {
         for i in levelGain.sorted() { l.append("Portare a -24 LUFS il volume della traccia \(a(i)) (guadagno fisso)") }
         for i in boostCenter.sorted() { l.append(String(format: "Alzare i dialoghi (centro +%.0f dB) nella traccia %@", centerDB, a(i))) }
         for i in normalize.sorted() { l.append("Compressione dinamica sulla traccia \(a(i)) (sconsigliata)") }
-        if let t = trimStart { l.append("Tagliare l'inizio fino a \(hms(t))") }
-        if let t = trimEnd { l.append("Tagliare la fine da \(hms(t))") }
+        for r in eraseText { l.append("Cancellare dall'immagine la scritta «\(r.label)» (da \(hms(r.from)) a \(hms(r.to))); si ricodificano solo i primi secondi, il resto non cambia") }
         if tonemap { l.append("Convertire l'immagine da HDR a SDR (ricodifica lunga)") }
         if deinterlace { l.append("Deinterlacciare l'immagine (ricodifica lunga)") }
         return l
@@ -144,6 +142,23 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
     }
     if ext == "avi" && (!plan.cleanSubs.isEmpty || plan.subDefault != .keep) { return FixResult(ok: false, message: "Il formato AVI non può contenere sottotitoli.") }
 
+    // 0) cancellazione di una scritta: si ricodificano solo i primi secondi (mkvmerge + ffmpeg) e poi, se serve, si applica il resto della correzione alla copia
+    if !plan.eraseText.isEmpty {
+        guard ext == "mkv" else { return FixResult(ok: false, message: "Cancellare una scritta dall'immagine funziona per ora solo sui file .mkv.") }
+        let work = output.deletingLastPathComponent().appendingPathComponent(".moviepreflight-\(UUID().uuidString.prefix(8))")
+        defer { try? FileManager.default.removeItem(at: work) }
+        let (erased, why) = eraseTextInVideo(source: url, probe: pr, regions: plan.eraseText, work: work, progress: { progress($0 * 0.9, $1) }, lines: &lines)
+        guard let e = erased else { return FixResult(ok: false, message: (why ?? "Cancellazione non riuscita.") + " L'originale non è stato toccato.", lines: lines) }
+        var rest = plan; rest.eraseText = []
+        let old = work.appendingPathComponent("prev.mkv")
+        do { if inPlace { try FileManager.default.moveItem(at: output, to: old) }; try FileManager.default.moveItem(at: e, to: output) }
+        catch { if inPlace { try? FileManager.default.moveItem(at: old, to: output) }; return FixResult(ok: false, message: "Non riesco a salvare il file nuovo: \(error.localizedDescription)", lines: lines) }
+        if rest.isEmpty { return FixResult(ok: true, message: inPlace ? "Scritta cancellata nella copia corretta." : "Creata «\(output.lastPathComponent)» senza la scritta. L'originale non è stato toccato.", lines: lines, backup: nil, newURL: output) }
+        var r = applyFix(output, rest, output: output, progress: { progress(0.9 + $0 * 0.1, $1) })   // il resto della correzione, sulla copia appena creata
+        r.lines = lines + r.lines
+        if !r.ok { if inPlace { try? FileManager.default.removeItem(at: output); try? FileManager.default.moveItem(at: old, to: output) } else { try? FileManager.default.removeItem(at: output) } }
+        return r
+    }
     // 1) solo etichette in un mkv: si modifica l'intestazione sul posto, senza riscrivere il film
     if !plan.changesContent, ext == "mkv", let mp = tool("mkvpropedit") {
         progress(0.1, "Modifica delle etichette…")
@@ -183,14 +198,7 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
     let work = FileManager.default.temporaryDirectory.appendingPathComponent("moviepreflight-fix-" + UUID().uuidString); try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: work); try? FileManager.default.removeItem(at: tmp) }
 
-    // taglio: sempre sui keyframe, così nessun fotogramma resta a metà e non serve ricodificare
-    var s0 = 0.0, e0 = pr.duration
-    if plan.trimStart != nil || plan.trimEnd != nil {
-        progress(0.02, "Ricerca dei punti di taglio…")
-        let keys = packetTimes(fp, path, "v:0").keys
-        if let t = plan.trimStart { guard let k = keys.first(where: { $0 >= t }) else { return FixResult(ok: false, message: "Nessun punto di taglio utile dopo \(hms(t)).") }; s0 = k; lines.append(String(format: "Tolti i primi %.1f s (taglio al fotogramma chiave a %.2f s)", s0, s0)) }
-        if let t = plan.trimEnd { guard let k = keys.last(where: { $0 <= t }), k > s0 + 60 else { return FixResult(ok: false, message: "Nessun punto di taglio utile prima di \(hms(t)).") }; e0 = k; lines.append(String(format: "Tolto tutto dopo %.2f s (ultimo %.0f s)", e0, pr.duration - e0)) }
-    }
+    let s0 = 0.0, e0 = pr.duration
     // sottotitoli ripuliti: si riscrive la traccia senza le battute con pubblicità/crediti
     var extra: [Int: Int] = [:]; var inputs: [String] = []
     for k in plan.cleanSubs.union(Set(plan.syncSubs.keys)).union(plan.repairSubs).sorted() where subs.indices.contains(k) && !plan.dropSubs.contains(k) {
@@ -222,8 +230,6 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
     for k in plan.levelGain where gains[k] == nil { return FixResult(ok: false, message: "Non riesco a misurare il volume della traccia audio \(k + 1).") }
     var a = ["-nostdin", "-y", "-v", "error", "-progress", "pipe:2", "-nostats"]
     a += ["-i", path] + inputs
-    if s0 > 0 { a += ["-ss", secs(s0)] }   // dopo gli ingressi: con -ss prima di -i alcuni mkv (es. Coraline, primo pacchetto senza DTS) non venivano tagliati affatto
-    if e0 < pr.duration { a += ["-t", secs(e0 - s0)] }
     a += ["-map_chapters", "0", "-map_metadata", "0", "-c", "copy"]
     if let t = plan.setTitle { a += ["-metadata", "title=\(t)"]; lines.append("Titolo del contenitore: «\(t)»") } else if plan.clearTitle { a += ["-metadata", "title="]; lines.append("Titolo del contenitore tolto") }   // base: tutto copiato; le opzioni per-traccia che seguono hanno la precedenza
     if ext == "mp4" || ext == "m4v" || ext == "mov" { a += ["-c:s", "mov_text", "-movflags", "+faststart"] }

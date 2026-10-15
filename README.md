@@ -36,7 +36,7 @@ Dopo una correzione, «Confronta prima e dopo» (nel messaggio di esito o nel me
 Dalle segnalazioni (pulsante «Correggi…») o dal pulsante in alto si apre una finestra che mostra tutto quello che verrà fatto, da confermare:
 - traccia **audio predefinita**, **sottotitoli predefiniti** (o nessuno), **lingua** delle tracce senza etichetta;
 - **togliere pubblicità e crediti** dai sottotitoli, **eliminare** tracce audio/sottotitoli;
-- **tagliare** l'inizio o la fine (crediti del torrent nell'immagine) senza ricodificare, sui fotogrammi chiave;
+- **cancellare la scritta** del torrent (es. «By Licdom») dall'immagine nei primi secondi: si ricodifica solo il tratto fino al primo fotogramma chiave dopo la scritta (il pezzo di immagine accanto la ricopre, con bordi sfumati; HDR10 e metadati conservati) e il resto del film è copiato senza perdite. Solo .mkv HEVC/H.264 a 8 o 10 bit; serve MKVToolNix. L'app non taglia mai parti del film;
 - **alzare i dialoghi** (canale centrale +4 dB con limitatore) nei 5.1 dove la musica li copre;
 - **riparare gli accenti rovinati** dei sottotitoli (ogni battuta riletta come Windows-1252 e rimessa in UTF-8; se restano oltre il 10% di battute rovinate l'operazione è annullata), **impostare o togliere l'etichetta «forzati»**, **rinominare il file**;
 - **risincronizzare i sottotitoli** (spostamento fisso o allungamento per frame rate diverso), **correggere la lingua** di una traccia audio dopo il riconoscimento del parlato, **togliere il titolo** dal contenitore (sigle di gruppi di rilascio);
