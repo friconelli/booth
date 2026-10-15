@@ -53,7 +53,8 @@ struct FixSheet: View {
                         Toggle("Elimina questa traccia", isOn: Binding(get: { plan.dropSubs.contains(t.ord) }, set: { if $0 { plan.dropSubs.insert(t.ord); plan.cleanSubs.remove(t.ord) } else { plan.dropSubs.remove(t.ord) } }))
                     } } } }
                 group("Contenitore") {
-                    Toggle("Togli il titolo dai metadati del file", isOn: $plan.clearTitle)
+                    Toggle("Titolo nei metadati uguale al nome del file (\(titleBase(url)))", isOn: Binding(get: { plan.setTitle != nil }, set: { plan.setTitle = $0 ? titleBase(url) : nil; if $0 { plan.clearTitle = false } }))
+                    Toggle("Togli il titolo dai metadati del file", isOn: Binding(get: { plan.clearTitle }, set: { plan.clearTitle = $0; if $0 { plan.setTitle = nil } }))
                 }
                 group("Immagine") {
                     Toggle("Converti da HDR a SDR (zscale + tone mapping)", isOn: $plan.tonemap)

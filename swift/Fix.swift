@@ -13,13 +13,14 @@ struct FixPlan {
     var repairSubs: Set<Int> = []                       // sottotitoli con accenti rovinati (doppia codifica) da riparare
     var forcedFlags: [Int: Bool] = [:]                  // etichetta «forzati» da impostare o togliere
     var tonemap = false                                 // HDR → SDR (zscale + tonemap), ricodifica del video
+    var setTitle: String?                               // titolo del contenitore da impostare (di solito uguale al nome del file)
     var clearTitle = false                              // toglie il titolo dai metadati del contenitore
     var deinterlace = false                            // deinterlacciamento dell'immagine (ricodifica del video)
     var centerDB = 4.0                                 // quanto alzare il canale centrale
     var audioTouched: Set<Int> { normalize.union(boostCenter).union(levelGain).union(toDolby) }
     var trimStart: Double?, trimEnd: Double?          // taglia i primi N secondi / dal secondo N alla fine
     var changesContent: Bool { !cleanSubs.isEmpty || !dropSubs.isEmpty || !dropAudio.isEmpty || !normalize.isEmpty || !boostCenter.isEmpty || !levelGain.isEmpty || !toDolby.isEmpty || !syncSubs.isEmpty || !repairSubs.isEmpty || deinterlace || tonemap || trimStart != nil || trimEnd != nil }
-    var isEmpty: Bool { !changesContent && !clearTitle && audioDefault == nil && subDefault == .keep && lang.isEmpty && forcedFlags.isEmpty }
+    var isEmpty: Bool { !changesContent && !clearTitle && setTitle == nil && audioDefault == nil && subDefault == .keep && lang.isEmpty && forcedFlags.isEmpty }
     mutating func merge(_ h: FixHint) {
         switch h {
         case .defaultAudio(let i): audioDefault = i
@@ -35,6 +36,7 @@ struct FixPlan {
         case .deinterlace: deinterlace = true
         case .toDolby(let i): toDolby.insert(i)
         case .clearTitle: clearTitle = true
+        case .setTitle(let t): setTitle = t
         case .tonemap: tonemap = true
         case .rename(let n): rename = n
         case .repairEncoding(let i): repairSubs.insert(i)
@@ -51,7 +53,8 @@ extension FixPlan {
         func a(_ i: Int) -> String { "audio \(i + 1)" + (rep.audioTracks.indices.contains(i) && !rep.audioTracks[i].lang.isEmpty ? " (\(langLabel(rep.audioTracks[i].lang)))" : "") }
         func s(_ i: Int) -> String { "sottotitoli \(i + 1)" + (rep.subTracks.indices.contains(i) && !rep.subTracks[i].lang.isEmpty ? " (\(langLabel(rep.subTracks[i].lang)))" : "") }
         if let n = rename { l.append("Rinominare il file in «\(n)»") }
-        if clearTitle { l.append("Togliere il titolo dai metadati del file") }
+        if clearTitle && setTitle == nil { l.append("Togliere il titolo dai metadati del file") }
+        if let t = setTitle { l.append("Impostare il titolo nei metadati del file su «\(t)»") }
         if let d = audioDefault { l.append("Rendere predefinita la traccia \(a(d))") }
         switch subDefault { case .none: l.append("Spegnere i sottotitoli di default"); case .track(let k): l.append("Rendere predefiniti i \(s(k))"); case .keep: break }
         for (k, v) in lang.sorted(by: { $0.key < $1.key }) { l.append("Impostare la lingua \(langLabel(v)) su \(k.hasPrefix("a") ? a(Int(k.dropFirst())!) : s(Int(k.dropFirst())!))") }
@@ -108,6 +111,8 @@ func setVerdictTag(_ url: URL, ok: Bool) {
     tags.append(ok ? "Verde\n2" : "Rosso\n6")
     if let d = try? PropertyListSerialization.data(fromPropertyList: tags, format: .binary, options: 0) { _ = d.withUnsafeBytes { setxattr(path, key, $0.baseAddress, d.count, 0, 0) } }
 }
+/// Il nome del file senza estensione e senza il «(corretto)» aggiunto dall'app: è il titolo che il contenitore dovrebbe avere.
+func titleBase(_ url: URL) -> String { url.deletingPathExtension().lastPathComponent.replacingOccurrences(of: #" \(corretto\)( \d+)?$"#, with: "", options: .regularExpression) }
 /// Dove salvare la versione corretta: accanto all'originale, con il nome nuovo (se c'è) o «… (corretto)»; mai su un file che esiste già.
 func correctedURL(for url: URL, rename: String? = nil) -> URL {
     let dir = url.deletingLastPathComponent(), ext = url.pathExtension, orig = url.deletingPathExtension().lastPathComponent
@@ -145,7 +150,7 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
         if !inPlace { do { try cloneFile(url, output) } catch { return FixResult(ok: false, message: "Non riesco a creare la copia: \(error.localizedDescription)") } }
         func discard() { if !inPlace { try? FileManager.default.removeItem(at: output) } }
         var a = [output.path]
-        if plan.clearTitle { a += ["--edit", "info", "--delete", "title"] }
+        if let t = plan.setTitle { a += ["--edit", "info", "--set", "title=\(t)"] } else if plan.clearTitle { a += ["--edit", "info", "--delete", "title"] }
         for (i, _) in audio.enumerated() {
             var sets: [String] = []
             if let d = plan.audioDefault { sets += ["flag-default=\(i == d ? 1 : 0)"] }
@@ -164,7 +169,7 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
         guard let np = Probe(output.path) else { discard(); return FixResult(ok: false, message: "La copia modificata non è leggibile: l'originale non è stato toccato.") }
         if let d = plan.audioDefault { lines.append("Traccia audio predefinita: \(d + 1)"); if disp(np.audio[d], "default") != 1 { discard(); return FixResult(ok: false, message: "La modifica non risulta applicata: l'originale non è stato toccato.") } }
         switch plan.subDefault { case .none: lines.append("Nessun sottotitolo predefinito"); case .track(let k): lines.append("Sottotitoli predefiniti: traccia \(k + 1)"); case .keep: break }
-        if plan.clearTitle { lines.append("Titolo del contenitore tolto") }
+        if let t = plan.setTitle { lines.append("Titolo del contenitore: «\(t)»") } else if plan.clearTitle { lines.append("Titolo del contenitore tolto") }
         for (k, v) in plan.lang.sorted(by: { $0.key < $1.key }) { lines.append("Lingua \(k.hasPrefix("a") ? "audio" : "sottotitoli") \(Int(k.dropFirst())! + 1): \(langLabel(v))") }
         progress(1, "Fatto"); return FixResult(ok: true, message: inPlace ? "Etichette aggiornate nella copia corretta." : "Creata «\(output.lastPathComponent)» (copia istantanea con le sole etichette cambiate). L'originale non è stato toccato.", lines: lines, backup: nil, newURL: output)
     }
@@ -220,7 +225,7 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
     a += ["-i", path] + inputs
     if e0 < pr.duration { a += ["-t", secs(e0 - s0)] }
     a += ["-map_chapters", "0", "-map_metadata", "0", "-c", "copy"]
-    if plan.clearTitle { a += ["-metadata", "title="]; lines.append("Titolo del contenitore tolto") }   // base: tutto copiato; le opzioni per-traccia che seguono hanno la precedenza
+    if let t = plan.setTitle { a += ["-metadata", "title=\(t)"]; lines.append("Titolo del contenitore: «\(t)»") } else if plan.clearTitle { a += ["-metadata", "title="]; lines.append("Titolo del contenitore tolto") }   // base: tutto copiato; le opzioni per-traccia che seguono hanno la precedenza
     if ext == "mp4" || ext == "m4v" || ext == "mov" { a += ["-c:s", "mov_text", "-movflags", "+faststart"] }
     var vOut = 0, vDone = false
     for s in pr.streams where s["codec_type"] as? String == "video" {

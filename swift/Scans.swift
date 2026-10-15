@@ -116,8 +116,11 @@ func scanCredits(_ pr: Probe, _ path: String, _ tmp: URL, _ c: Collector, progre
     DispatchQueue.concurrentPerform(iterations: frames.count) { i in
         let (u, t) = frames[i]; let req = VNRecognizeTextRequest(); req.recognitionLevel = .accurate; req.usesLanguageCorrection = false
         try? VNImageRequestHandler(url: u).perform([req])
-        let text = (req.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " | ")
-        if text.has(adPattern) { lock.lock(); hits.append((t, text, u)); lock.unlock() }
+        let obs = (req.results ?? []).compactMap { o in o.topCandidates(1).first.map { ($0.string, o.boundingBox) } }
+        let text = obs.map(\.0).joined(separator: " | ")
+        // firma del rilasciatore: una riga isolata «By Nome» nella parte bassa dello schermo (es. «By Licdom»)
+        let sig = t >= 60 ? nil : obs.first { $0.1.minY < 0.25 && $0.0.has(#"^\s*by\s+[^\s|]{3,24}\s*$"#) }?.0
+        if text.has(adPattern) || sig != nil { lock.lock(); hits.append((t, sig != nil && !text.has(adPattern) ? "\(sig!) | " + text : text, u)); lock.unlock() }
         lock.lock(); done += 1; let f = Double(done) / Double(max(frames.count, 1)); lock.unlock(); progress(0.4 + 0.6 * f)
     }
     // una segnalazione per ogni gruppo di fotogrammi vicini; la miniatura va copiata prima che la cartella temporanea sparisca

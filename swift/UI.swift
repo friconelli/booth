@@ -55,7 +55,7 @@ final class Store: ObservableObject {
     }
     /// Applica una correzione (una per volta, dopo l'analisi in corso) e poi rianalizza il film per mostrare l'effetto.
     func fix(_ j: Job, _ plan: FixPlan) {
-        var p = plan; let newBase = p.rename; p.rename = nil
+        var p = plan; let newBase = p.rename; p.rename = nil; if p.setTitle == nil, let n = newBase { p.setTitle = n }   // il titolo nei metadati segue il nuovo nome
         let source = j.url, editing = j.hasCorrected, orig = j.origURL ?? j.url, origReport = j.origReport ?? j.report
         let output = editing ? j.url : correctedURL(for: j.url, rename: newBase)
         j.fixProgress = 0; j.fixStage = "In attesa…"; j.fixResult = nil

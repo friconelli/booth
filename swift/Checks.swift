@@ -1,7 +1,7 @@
 import Foundation
 
 private let stdFps: [Double] = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]
-let adPattern = #"www\.|https?://|\b[a-z0-9-]{4,}\.(com|net|org|info|tv|to|me|ws|cc|io|ru|mx|pw|se)\b|\byify\b|\byts\b|rarbg|torrent|\bettv\b|eztv|1337x|opensubtitles|subscene|addic7ed|podnapisi|\bsub(titles?)? (by|from)\b|sottotitoli (di|by|a cura)|traduzione( di| a cura)?:|tradotto da|translated by|sync(ed|hronized)?( (and|&) (corrected|edited))? by|ripped by|encoded by|downloaded from|scaricato da|italiansubs|itasa|please rate|advertise|your ad here|vip member|\bfgt\b|\bntb\b|\bpsa\b|megusta|\btigole\b|\bqxr\b|galaxytv|\bamiable\b|\bpublichd\b|\bsparks\b|\bgeckos\b"#
+let adPattern = #"www\.|https?://|\b[a-z0-9-]{4,}\.(com|net|org|info|tv|to|me|ws|cc|io|ru|mx|pw|se)\b|\byify\b|\byts\b|rarbg|torrent|\bettv\b|eztv|1337x|opensubtitles|subscene|addic7ed|podnapisi|\bsub(titles?)? (by|from)\b|sottotitoli (di|by|a cura)|traduzione( di| a cura)?:|tradotto da|translated by|sync(ed|hronized)?( (and|&) (corrected|edited))? by|ripped by|encoded by|downloaded from|scaricato da|italiansubs|itasa|please rate|advertise|your ad here|vip member|\bfgt\b|\bntb\b|\bpsa\b|megusta|\btigole\b|\bqxr\b|galaxytv|\bamiable\b|\bpublichd\b|\bsparks\b|\bgeckos\b|licdom|mir ?crew|phadron|jeddak|sp33dy94|g4tpuz|ebleep|paso77|\bgege\b|dr\.? ?mzu|novarip|lordbangs|ilcorsaronero|corsaronero|tntvillage|torrentgalaxy|piratebay|ddlvalle|italiashare|streamingcommunity|altadefinizione|cb01|guardaserie|\bnuita\b|\bnueng\b"#
 
 func checkContainer(_ pr: Probe, _ url: URL, _ c: Collector) {
     let ext = url.pathExtension.lowercased(); let fname = (pr.fmt["format_name"] as? String) ?? ""; let ft = tags(["tags": pr.fmt["tags"] as Any])
@@ -17,7 +17,9 @@ func checkContainer(_ pr: Probe, _ url: URL, _ c: Collector) {
     if !["mp4", "mkv", "avi", "m4v", "mov"].contains(ext) { c.add(.info, "File", "Formato insolito (.\(ext))", "Pensato per mp4, mkv, avi.") }
     if pr.video == nil { c.add(.error, "Video", "Nessuna traccia video", "Il file non contiene immagini.") }
     if d > 0 && d < 60 { c.add(.warn, "File", "Durata molto breve", "Il file dura solo \(hms(d)).") }
-    if let t = ft["title"], t.has(adPattern) { c.add(.warn, "File", "Il titolo nei metadati contiene pubblicità", "«\(t)» — compare in alcuni lettori.", fix: [.clearTitle]) }
+    let want = titleBase(url), norm = { (s: String) in s.lowercased().filter { $0.isLetter || $0.isNumber } }
+    if let t = ft["title"], t.has(adPattern) { c.add(.warn, "File", "Il titolo nei metadati contiene pubblicità", "«\(t)» — compare in alcuni lettori. Si può sostituire con il nome del file («\(want)»).", fix: [.setTitle(want)]) }
+    else if let t = ft["title"], !t.isEmpty, norm(t) != norm(want) { c.add(.info, "File", "Il titolo nei metadati è diverso dal nome del file", "Nei metadati c'è «\(t)», il file si chiama «\(want)»: alcuni lettori mostrano il titolo dei metadati, che non cambia se rinomini il file nel Finder.", fix: [.setTitle(want)]) }
     if let t = ft["comment"] ?? ft["description"], t.has(adPattern) { c.add(.info, "File", "Commento dei metadati con pubblicità", "«\(String(t.prefix(120)))»") }
     if ext == "avi", let cn = pr.video?["codec_name"] as? String, ["h264", "hevc"].contains(cn) { c.add(.info, "File", "H.264/HEVC dentro AVI", "Il contenitore AVI gestisce male il flusso moderno: possibili scatti nella ricerca e nella sincronia.") }
     if let n = Optional(pr.of("video").count + pr.streams.filter { disp($0, "attached_pic") == 1 }.count), n > 1 { c.add(.info, "File", "Più flussi video o copertina incorporata", "\(n) flussi: viene riprodotto il primo.") }

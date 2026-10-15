@@ -19,6 +19,7 @@ func fixLabel(_ h: FixHint) -> String {
     case .deinterlace: return "Deinterlaccia"
     case .tonemap: return "Converti in SDR"
     case .clearTitle: return "Togli il titolo"
+    case .setTitle: return "Allinea il titolo al nome del file"
     case .syncSubs: return "Risincronizza"
     case .rename: return "Rinomina il file"
     }

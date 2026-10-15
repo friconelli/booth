@@ -28,7 +28,7 @@ if let f = arg("--fix").first {
     p.trimStart = arg("--trim-start").first.flatMap { Double($0) }; p.trimEnd = arg("--trim-end").first.flatMap { Double($0) }
     // di default il risultato è una copia «… (corretto)» accanto al file: l'originale non viene mai toccato. --output PATH sceglie il nome, --replace modifica il file indicato (solo per copie già corrette e per i test)
     let src = URL(fileURLWithPath: f), replace = CommandLine.arguments.contains("--replace")
-    var p2 = p; let nb = p2.rename; p2.rename = nil
+    var p2 = p; let nb = p2.rename; p2.rename = nil; if let t = arg("--set-title").first { p2.setTitle = t } else if let n = nb { p2.setTitle = n }
     let out: URL = arg("--output").first.map { URL(fileURLWithPath: $0) } ?? (replace ? src : correctedURL(for: src, rename: nb))
     var r: FixResult
     if p2.isEmpty {
