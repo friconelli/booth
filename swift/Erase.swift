@@ -36,18 +36,28 @@ func eraseTextInVideo(source: URL, probe pr: Probe, regions: [EraseRegion], work
     guard regions.allSatisfy({ $0.from < 150 }) else { return (nil, "Per ora si cancellano solo scritte che compaiono nei primi minuti del film.") }
     // fine del tratto da ricodificare: il primo fotogramma chiave dopo la fine delle scritte
     progress(0.02, "Ricerca del punto di taglio…")
-    let keys = packetTimes(fp, source.path, "v:0").keys, last = regions.map(\.to).max() ?? 0
+    let pt = packetTimes(fp, source.path, "v:0"), keys = pt.keys, last = regions.map(\.to).max() ?? 0
     guard let kE = keys.first(where: { $0 >= last + 0.3 }) else { return (nil, "Non trovo un fotogramma chiave dopo la scritta.") }
     guard kE <= 150 else { return (nil, String(format: "Il tratto da ricodificare sarebbe troppo lungo (%.0f s): i fotogrammi chiave sono troppo distanti.", kE)) }
+    let k2 = keys.first(where: { $0 > kE + 0.5 })                     // il fotogramma chiave successivo: da lì in poi il film resta com'è
+    let nHead = pt.pts.filter { $0 < kE - 0.0005 }.count              // fotogrammi da ricodificare (tutti quelli che si vedono prima di kE)
+    let isDV = ((v["side_data_list"] as? [[String: Any]]) ?? []).contains { ($0["side_data_type"] as? String ?? "").contains("DOVI") }
+    let es = codec == "hevc" ? "hevc" : "h264"
     try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
-    let p = work.appendingPathComponent("p.mkv"), p1 = work.appendingPathComponent("p-001.mkv"), p2 = work.appendingPathComponent("p-002.mkv"), h = work.appendingPathComponent("h.mkv"), out = work.appendingPathComponent("out.mkv")
+    let sp = work.appendingPathComponent("p.mkv"), h = work.appendingPathComponent("head." + es), a1 = work.appendingPathComponent("a." + es), b1 = work.appendingPathComponent("b." + es), all = work.appendingPathComponent("video." + es), out = work.appendingPathComponent("out.mkv")
+    guard let sj = try? JSONSerialization.jsonObject(with: run(mm, ["-J", source.path]).out) as? [String: Any], let st = (sj["tracks"] as? [[String: Any]])?.first(where: { $0["type"] as? String == "video" }), let vid = st["id"] as? Int else { return (nil, "Non riesco a leggere le tracce del film.") }
+    let src = (st["properties"] as? [String: Any]) ?? [:]
+    if isDV && !((run(ff, ["-hide_banner", "-bsfs"]).text).contains("dovi_rpu")) { return (nil, "L'ffmpeg in uso non sa togliere i dati Dolby Vision (filtro dovi_rpu).") }
 
-    // 1) il film viene diviso in due al fotogramma chiave (senza ricodificare): una testa e il resto
-    progress(0.05, "Divisione del film…")
-    let sp = run(mm, ["-o", p.path, "--split", "timestamps:" + clock(kE), source.path])
-    guard sp.status <= 1, FileManager.default.fileExists(atPath: p1.path), FileManager.default.fileExists(atPath: p2.path) else { return (nil, "mkvmerge non è riuscito a dividere il film: \(String(sp.text.suffix(160)))") }
+    // 1) dal film si estrae solo il video, diviso al fotogramma chiave kE (e al successivo), senza ricodificare
+    progress(0.05, "Divisione del video…")
+    var spArgs = ["-o", sp.path, "--video-tracks", "\(vid)", "--no-audio", "--no-subtitles", "--no-chapters", "--no-attachments", "--no-global-tags", "--split", "timestamps:" + clock(kE) + (k2.map { "," + clock($0) } ?? ""), source.path]
+    let so = run(mm, spArgs); spArgs = []
+    let p2 = work.appendingPathComponent("p-002.mkv"), p3 = work.appendingPathComponent("p-003.mkv"), p1f = work.appendingPathComponent("p-001.mkv")
+    guard so.status <= 1, FileManager.default.fileExists(atPath: p2.path) else { return (nil, "mkvmerge non è riuscito a dividere il video: \(String(so.text.suffix(160)))") }
+    try? FileManager.default.removeItem(at: p1f)
 
-    // 2) la testa si ricodifica con la scritta ricoperta
+    // 2) i primi fotogrammi (fino a kE, compresi quelli «di testa» del fotogramma chiave) si ricodificano con la scritta ricoperta
     var chain = "[0:v:0]", g: [String] = []
     for (i, r) in regions.enumerated() {
         guard let pr_ = patchRect(r, W, H) else { return (nil, "Non c'è abbastanza immagine intorno alla scritta «\(r.label)» per ricoprirla.") }
@@ -65,8 +75,9 @@ func eraseTextInVideo(source: URL, probe pr: Probe, regions: [EraseRegion], work
     if let x = tag("color_primaries") { colorArgs += ["-color_primaries", x] }; if let x = tag("color_transfer") { colorArgs += ["-color_trc", x] }
     if let x = tag("color_space") { colorArgs += ["-colorspace", x] }; if let x = tag("color_range") { colorArgs += ["-color_range", x] }
     if codec == "hevc" {
-        var xp = ["log-level=error", "open-gop=0", "keyint=250", "repeat-headers=1"]
+        var xp = ["log-level=error", "open-gop=0", "keyint=250", "repeat-headers=1", "aud=1"]
         if let x = tag("color_primaries") { xp.append("colorprim=\(x)") }; if let x = tag("color_transfer") { xp.append("transfer=\(x)") }; if let x = tag("color_space") { xp.append("colormatrix=\(x)") }
+        if let cl = ["left": 0, "center": 1, "topleft": 2, "top": 3, "bottomleft": 4, "bottom": 5][(v["chroma_location"] as? String) ?? ""] { xp.append("chromaloc=\(cl)") }   // come l'originale: se cambia, il lettore si riconfigura alla giunzione
         for sd in (v["side_data_list"] as? [[String: Any]]) ?? [] {   // metadati HDR10 (display di masterizzazione e luminosità massima)
             func n(_ k: String, _ unit: Double) -> Int { Int(((ratio(sd[k]) ?? 0) * unit).rounded()) }
             switch sd["side_data_type"] as? String ?? "" {
@@ -75,28 +86,41 @@ func eraseTextInVideo(source: URL, probe pr: Probe, regions: [EraseRegion], work
             default: break }
         }
         enc = ["-c:v", "libx265", "-preset", "medium", "-crf", "12", "-pix_fmt", pix, "-x265-params", xp.joined(separator: ":")] + colorArgs
-    } else { enc = ["-c:v", "libx264", "-preset", "slow", "-crf", "12", "-pix_fmt", pix] + colorArgs }
+    } else { enc = ["-c:v", "libx264", "-preset", "slow", "-crf", "12", "-pix_fmt", pix, "-x264-params", "aud=1" + ([("left", 0), ("center", 1), ("topleft", 2), ("top", 3), ("bottomleft", 4), ("bottom", 5)].first { $0.0 == (v["chroma_location"] as? String) }.map { ":chromaloc=\($0.1)" } ?? "")] + colorArgs }
     progress(0.1, "Ricodifica dei primi secondi…")
     var errs: [String] = []
-    let eo = run(ff, ["-nostdin", "-y", "-v", "error", "-progress", "pipe:2", "-nostats", "-i", p1.path, "-an", "-sn", "-filter_complex", g.joined(separator: ";"), "-map", "[out]", "-fps_mode", "passthrough"] + enc + [h.path]) { l in
-        if let m = l.match(#"out_time_us=(\d+)"#), let us = Double(m[1]) { progress(0.1 + 0.6 * min(1, us / 1e6 / kE), "Ricodifica dei primi secondi…") } else if !l.contains("=") && !l.isEmpty { errs.append(l) }
+    let eo = run(ff, ["-nostdin", "-y", "-v", "error", "-progress", "pipe:2", "-nostats", "-i", source.path, "-frames:v", "\(nHead)", "-an", "-sn", "-filter_complex", g.joined(separator: ";"), "-map", "[out]", "-fps_mode", "passthrough"] + enc + ["-f", es, h.path]) { l in
+        if let m = l.match(#"out_time_us=(\d+)"#), let us = Double(m[1]) { progress(0.1 + 0.4 * min(1, us / 1e6 / kE), "Ricodifica dei primi secondi…") } else if !l.contains("=") && !l.isEmpty { errs.append(l) }
     }
     guard eo.status == 0, FileManager.default.fileExists(atPath: h.path) else { return (nil, "ffmpeg non è riuscito a ricodificare il tratto: \(errs.suffix(2).joined(separator: " "))") }
     lines.append(String(format: "Ricodificati solo i primi %.1f s (%@ CRF 12); il resto del film è copiato senza perdite", kE, codec == "hevc" ? "x265" : "x264"))
 
-    // 3) la testa ricodificata e il resto vengono riuniti, insieme a tutte le altre tracce
-    progress(0.75, "Riunione del film…")
-    guard let jd = try? JSONSerialization.jsonObject(with: run(mm, ["-J", p2.path]).out) as? [String: Any], let tr2 = jd["tracks"] as? [[String: Any]], let vt = tr2.first(where: { $0["type"] as? String == "video" }), let vid = vt["id"] as? Int else { return (nil, "Non riesco a leggere le tracce del film diviso.") }
-    var src: [String: Any] = [:]
-    if let sj = try? JSONSerialization.jsonObject(with: run(mm, ["-J", source.path]).out) as? [String: Any], let st = (sj["tracks"] as? [[String: Any]])?.first(where: { $0["type"] as? String == "video" }) { src = (st["properties"] as? [String: Any]) ?? [:] }
-    var a = ["-o", out.path]
-    if let t = tags(["tags": pr.fmt["tags"] as Any])["title"] { a += ["--title", t] }
-    a += ["--language", "0:\((src["language"] as? String) ?? "und")", "--default-track-flag", "0:\((src["default_track"] as? Bool ?? true) ? "yes" : "no")"]
-    if let n = src["track_name"] as? String { a += ["--track-name", "0:\(n)"] }
-    a += [h.path, "--video-tracks", "!\(vid)", p1.path, "+", p2.path, "--append-to", tr2.compactMap { $0["id"] as? Int }.map { $0 == vid ? "2:\($0):0:0" : "2:\($0):1:\($0)" }.joined(separator: ",")]
-    let mo = run(mm, a)
-    guard mo.status <= 1, FileManager.default.fileExists(atPath: out.path) else { return (nil, "mkvmerge non è riuscito a riunire il film: \(String(mo.text.suffix(200)))") }
-    for f in [p1, p2, h] { try? FileManager.default.removeItem(at: f) }
+    // 3) il resto del video: nel primo tratto si tolgono i fotogrammi «di testa» del fotogramma chiave (non decodificabili senza quelli che lo precedevano; sono già nel tratto ricodificato);
+    //    in tutto il resto si tolgono i dati Dolby Vision, che mancherebbero nel tratto ricodificato (cambiare formato a metà film fa scattare i lettori)
+    progress(0.55, "Preparazione del resto del video…")
+    func toES(_ i: URL, _ o: URL, _ bsf: String?) -> Bool { run(ff, ["-nostdin", "-y", "-v", "error", "-i", i.path, "-map", "0:v:0", "-c", "copy"] + (bsf.map { ["-bsf:v", $0] } ?? []) + ["-f", es, o.path]).status == 0 }
+    let bsfA = [codec == "hevc" ? "filter_units=remove_types=8|9" : nil, isDV ? "dovi_rpu=strip=1" : nil].compactMap { $0 }.joined(separator: ",")
+    guard toES(p2, a1, bsfA.isEmpty ? nil : bsfA) else { return (nil, "ffmpeg non è riuscito a preparare il resto del video.") }
+    try? FileManager.default.removeItem(at: p2)
+    var parts = [h, a1]
+    if k2 != nil { guard FileManager.default.fileExists(atPath: p3.path), toES(p3, b1, isDV ? "dovi_rpu=strip=1" : nil) else { return (nil, "ffmpeg non è riuscito a preparare il resto del video.") }; try? FileManager.default.removeItem(at: p3); parts.append(b1) }
+    if isDV { lines.append("Dolby Vision: tolto dal video (resta l'HDR10 di base), perché il tratto ricodificato non può contenerlo") }
+    // un marcatore di «fine sequenza» tra i due tratti: dice ai lettori che da lì comincia un nuovo flusso (parametri diversi, nessun riferimento ai fotogrammi precedenti)
+    if codec == "hevc" { let eos = work.appendingPathComponent("eos.bin"); try? Data([0, 0, 0, 1, 0x48, 0x01]).write(to: eos); parts.insert(eos, at: 1) }
+    guard run("/bin/sh", ["-c", "o=\"$1\"; shift; cat \"$@\" > \"$o\"", "sh", all.path] + parts.map(\.path)).status == 0 else { return (nil, "Non riesco a riunire i tratti del video.") }
+    for f in parts { try? FileManager.default.removeItem(at: f) }
+
+    // 4) il nuovo video sostituisce quello del film; audio, sottotitoli, capitoli e tutto il resto vengono dal film originale, senza toccarli
+    progress(0.8, "Creazione del film nuovo…")
+    var ma = ["-o", out.path]
+    if let t = tags(["tags": pr.fmt["tags"] as Any])["title"] { ma += ["--title", t] }
+    ma += ["--language", "0:\((src["language"] as? String) ?? "und")", "--default-track-flag", "0:\((src["default_track"] as? Bool ?? true) ? "yes" : "no")"]
+    if let n = src["track_name"] as? String { ma += ["--track-name", "0:\(n)"] }
+    let fr = (v["r_frame_rate"] as? String) ?? "24000/1001"
+    ma += ["--default-duration", "0:\(fr)p", all.path, "--video-tracks", "!\(vid)", source.path]
+    let mo = run(mm, ma)
+    guard mo.status <= 1, FileManager.default.fileExists(atPath: out.path) else { return (nil, "mkvmerge non è riuscito a creare il film: \(String(mo.text.suffix(200)))") }
+    try? FileManager.default.removeItem(at: all)
 
     // 4) controlli prima di consegnare: stesse tracce, stessa durata (± un fotogramma), scritta davvero sparita
     progress(0.85, "Verifica del nuovo file…")
@@ -104,6 +128,9 @@ func eraseTextInVideo(source: URL, probe pr: Probe, regions: [EraseRegion], work
     if np.audio.count != pr.audio.count || np.subs.count != pr.subs.count || np.of("video").count != pr.of("video").count { return (nil, "Il nuovo file ha un numero di tracce diverso dall'originale.") }
     if abs(np.duration - pr.duration) > 1.0 { return (nil, String(format: "Durata del nuovo file %@ diversa dall'originale %@.", hms(np.duration), hms(pr.duration))) }
     if (np.video?["codec_name"] as? String) != codec { return (nil, "Il codec del video è cambiato.") }
+    // la giunzione deve decodificarsi senza errori (è lì che il primo tentativo faceva scattare i lettori)
+    let jd = run(ff, ["-nostdin", "-v", "error", "-ss", String(max(0, kE - 2)), "-i", out.path, "-t", "4", "-map", "0:v:0", "-f", "null", "-"])
+    if jd.err.contains("Could not find ref") || jd.err.contains("Error constructing") || jd.err.contains("Invalid") { return (nil, "Il punto di unione fra il tratto ricodificato e il resto non si decodifica bene (\(String(jd.err.split(separator: "\n").first ?? ""))).") }
     for r in regions {
         for f in [0.25, 0.5, 0.75] {
             let t = r.from + (r.to - r.from) * f, jpg = work.appendingPathComponent("chk.jpg"); try? FileManager.default.removeItem(at: jpg)
