@@ -29,7 +29,7 @@ final class Store: ObservableObject {
             guard let j = j else { return }
             let r = analyze(j.url) { p, s in DispatchQueue.main.async { j.progress = p; j.stage = s } }
             DispatchQueue.main.async {
-                j.report = r; j.progress = 1
+                j.report = r; j.progress = 1; setVerdictTag(j.url, ok: r.essential.isEmpty)
                 if ProcessInfo.processInfo.environment["MOVIEPREFLIGHT_AUTOFIX"] != nil, j.origURL == nil {   // solo per le prove a vista: applica le correzioni sicure senza chiedere
                     var p = FixPlan(); r.findings.forEach { $0.fixes.filter { !isHeavy($0) }.forEach { p.merge($0) } }; p.rename = nil; if !p.isEmpty { self.fix(j, p) } }
             }
@@ -73,7 +73,7 @@ final class Store: ObservableObject {
             let rep = r.ok ? analyze(target) : nil
             DispatchQueue.main.async {
                 if r.ok { if j.origURL == nil { j.origURL = orig; j.origReport = origReport }; j.url = target; j.fixLog += r.lines }
-                j.fixResult = r; j.fixProgress = nil; if let rep = rep { j.report = rep }
+                j.fixResult = r; j.fixProgress = nil; if let rep = rep { j.report = rep; setVerdictTag(target, ok: rep.essential.isEmpty) }
             }
         }
     }

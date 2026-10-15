@@ -5,7 +5,7 @@ func arg(_ n: String) -> [String] { CommandLine.arguments.enumerated().filter { 
 if CommandLine.arguments.contains("--online") { onlineLookups = true }
 if let f = arg("--analyze").first {
     let r = analyze(URL(fileURLWithPath: f)) { p, s in FileHandle.standardError.write(Data(String(format: "\r%3.0f%% %@                    ", p * 100, s).utf8)) }
-    FileHandle.standardError.write(Data("\n".utf8)); print(r.text); print(String(format: "(analisi in %.0f s)", r.seconds)); exit(0)
+    FileHandle.standardError.write(Data("\n".utf8)); if CommandLine.arguments.contains("--tag") { setVerdictTag(URL(fileURLWithPath: f), ok: r.essential.isEmpty) }; print(r.text); print(String(format: "(analisi in %.0f s)", r.seconds)); exit(0)
 }
 if let f = arg("--dialogue").first {   // prova: --dialogue FILE ORD
     let ord = Int(arg("--dialogue-ord").first ?? "0") ?? 0

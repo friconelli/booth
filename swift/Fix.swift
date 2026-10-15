@@ -98,6 +98,16 @@ func cloneFile(_ src: URL, _ dst: URL) throws {
     if clonefile(src.path, dst.path, 0) == 0 { return }
     try FileManager.default.copyItem(at: src, to: dst)
 }
+/// Etichetta colorata del Finder: verde se il film è pronto per la sala, rossa se no. Toglie l'altra e lascia le etichette dell'utente; è solo un attributo esteso, il contenuto del file non cambia.
+func setVerdictTag(_ url: URL, ok: Bool) {
+    let key = "com.apple.metadata:_kMDItemUserTags", path = url.path
+    let n = getxattr(path, key, nil, 0, 0, 0)
+    var tags: [String] = []
+    if n > 0 { var buf = [UInt8](repeating: 0, count: n); if getxattr(path, key, &buf, n, 0, 0) == n, let a = try? PropertyListSerialization.propertyList(from: Data(buf), format: nil) as? [String] { tags = a } }
+    tags.removeAll { ["Verde", "Rosso", "Green", "Red"].contains($0.components(separatedBy: "\n")[0]) }
+    tags.append(ok ? "Verde\n2" : "Rosso\n6")
+    if let d = try? PropertyListSerialization.data(fromPropertyList: tags, format: .binary, options: 0) { _ = d.withUnsafeBytes { setxattr(path, key, $0.baseAddress, d.count, 0, 0) } }
+}
 /// Dove salvare la versione corretta: accanto all'originale, con il nome nuovo (se c'è) o «… (corretto)»; mai su un file che esiste già.
 func correctedURL(for url: URL, rename: String? = nil) -> URL {
     let dir = url.deletingLastPathComponent(), ext = url.pathExtension, orig = url.deletingPathExtension().lastPathComponent
