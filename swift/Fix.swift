@@ -205,7 +205,7 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
             lines.append("Sottotitoli \(k + 1): riparati gli accenti di \(before - left) battute")
         }
         let keep = moved.filter { (!plan.cleanSubs.contains(k) || !$0.t.has(adPattern)) && $0.e > s0 && $0.s < e0 }
-        func ts(_ x: Double) -> String { let v = max(0, x - s0); let ms = Int((v * 1000).rounded()); return String(format: "%02d:%02d:%02d,%03d", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000) }
+        func ts(_ x: Double) -> String { let v = max(0, x); let ms = Int((v * 1000).rounded()); return String(format: "%02d:%02d:%02d,%03d", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000) }
         let out = keep.enumerated().map { "\($0 + 1)\n\(ts($1.s)) --> \(ts($1.e))\n\($1.t)\n" }.joined(separator: "\n")
         let f = work.appendingPathComponent("clean\(k).srt"); try? out.write(to: f, atomically: true, encoding: .utf8)
         inputs += ["-i", f.path]; extra[k] = extra.count + 1
@@ -221,8 +221,8 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
     }
     for k in plan.levelGain where gains[k] == nil { return FixResult(ok: false, message: "Non riesco a misurare il volume della traccia audio \(k + 1).") }
     var a = ["-nostdin", "-y", "-v", "error", "-progress", "pipe:2", "-nostats"]
-    if s0 > 0 { a += ["-ss", secs(s0)] }
     a += ["-i", path] + inputs
+    if s0 > 0 { a += ["-ss", secs(s0)] }   // dopo gli ingressi: con -ss prima di -i alcuni mkv (es. Coraline, primo pacchetto senza DTS) non venivano tagliati affatto
     if e0 < pr.duration { a += ["-t", secs(e0 - s0)] }
     a += ["-map_chapters", "0", "-map_metadata", "0", "-c", "copy"]
     if let t = plan.setTitle { a += ["-metadata", "title=\(t)"]; lines.append("Titolo del contenitore: «\(t)»") } else if plan.clearTitle { a += ["-metadata", "title="]; lines.append("Titolo del contenitore tolto") }   // base: tutto copiato; le opzioni per-traccia che seguono hanno la precedenza
