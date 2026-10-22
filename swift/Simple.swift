@@ -28,13 +28,13 @@ func fixLabel(_ h: FixHint) -> String {
 func isHeavy(_ h: FixHint) -> Bool { switch h { case .dropSub, .deinterlace, .tonemap, .normalize: return true; default: return false } }
 
 /// Una correzione proposta, con le segnalazioni che la richiedono raggruppate (es. 40 battute con pubblicità = una sola voce).
-struct FixItem: Identifiable { let id: String; var sev: Sev; var title: String; var detail: String; var hints: [FixHint]; var count: Int; var thumb: URL?; var times: [Double]; var area: String; var essential: Bool }
+struct FixItem: Identifiable { let id: String; var sev: Sev; var title: String; var detail: String; var hints: [FixHint]; var count: Int; var thumb: URL?; var times: [Double]; var area: String; var essential: Bool; var sigs: Set<String> }
 func fixItems(_ r: Report) -> [FixItem] {
     var out: [FixItem] = []; var idx: [String: Int] = [:]
-    for f in r.findings.sorted(by: { $0.sev > $1.sev }) where !f.fixes.isEmpty && f.sev > .ok {
+    for f in r.visible.sorted(by: { $0.sev > $1.sev }) where !f.fixes.isEmpty && f.sev > .ok {
         let key = f.fixes.map { String(describing: $0) }.joined(separator: "|")
-        if let i = idx[key] { out[i].count += 1; out[i].sev = max(out[i].sev, f.sev); out[i].essential = out[i].essential || isEssential(f); if let t = f.time { out[i].times.append(t) }; if out[i].thumb == nil { out[i].thumb = f.thumb } }
-        else { idx[key] = out.count; out.append(FixItem(id: key, sev: f.sev, title: f.title, detail: f.detail, hints: f.fixes, count: 1, thumb: f.thumb, times: f.time.map { [$0] } ?? [], area: f.area, essential: isEssential(f))) }
+        if let i = idx[key] { out[i].count += 1; out[i].sev = max(out[i].sev, f.sev); out[i].essential = out[i].essential || isEssential(f); out[i].sigs.insert(f.sig); if let t = f.time { out[i].times.append(t) }; if out[i].thumb == nil { out[i].thumb = f.thumb } }
+        else { idx[key] = out.count; out.append(FixItem(id: key, sev: f.sev, title: f.title, detail: f.detail, hints: f.fixes, count: 1, thumb: f.thumb, times: f.time.map { [$0] } ?? [], area: f.area, essential: isEssential(f), sigs: [f.sig])) }
     }
     return out.sorted { $0.sev > $1.sev }
 }
@@ -96,15 +96,22 @@ func firstSentence(_ d: String) -> String {
 
 struct JobDetail: View {
     @ObservedObject var job: Job; let store: Store
-    @State private var sheetPlan: FixPlan?; @State private var showCompare = false; @State private var tab = 0; @State private var showPlus = false; @State private var open: Set<String> = []
+    @State private var sheetPlan: FixPlan?; @State private var showCompare = false; @State private var tab = 0; @State private var showPlus = false; @State private var open: Set<String> = []; @State private var showIgnored = false
     func plan(_ hints: [FixHint]) -> FixPlan { var p = FixPlan(); hints.forEach { p.merge($0) }; return p }
+    /// «Ho controllato a mano: non è un problema» — esclude queste segnalazioni (ricordato per questo film).
+    func dismiss(_ sigs: Set<String>) { guard let r = job.report else { return }; Dismissals.set(job.url, Dismissals.get(job.url).union(sigs)); refresh(r) }
+    func restore(_ sigs: Set<String>) { guard let r = job.report else { return }; Dismissals.set(job.url, Dismissals.get(job.url).subtracting(sigs)); refresh(r) }
+    func refresh(_ r: Report) { setVerdictTag(job.url, ok: r.essential.isEmpty); job.objectWillChange.send() }
+    func dismissButton(_ sigs: Set<String>) -> some View {
+        Button { withAnimation(.easeInOut(duration: 0.16)) { dismiss(sigs) } } label: { Label("Ho controllato: non è un problema", systemImage: "checkmark.circle") }.buttonStyle(.bordered).controlSize(.small)
+    }
     func toggle(_ id: String) { withAnimation(.easeInOut(duration: 0.16)) { if open.contains(id) { open.remove(id) } else { open.insert(id) } } }
 
     var body: some View {
         if let r = job.report {
             let items = fixItems(r)
-            let todo = r.findings.filter { $0.fixes.isEmpty && $0.sev >= .warn }.sorted { $0.sev > $1.sev }
-            let notes = r.findings.filter { $0.fixes.isEmpty && $0.sev == .info }
+            let todo = r.visible.filter { $0.fixes.isEmpty && $0.sev >= .warn }.sorted { $0.sev > $1.sev }
+            let notes = r.visible.filter { $0.fixes.isEmpty && $0.sev == .info }
             ScrollView { VStack(alignment: .leading, spacing: 18) {
                 header(r)
                 if let fr = job.fixResult { FixBanner(result: fr, compare: job.hasCorrected ? { showCompare = true } : nil, reveal: { NSWorkspace.shared.activateFileViewerSelecting([job.url]) }, discard: { store.discardCorrected(job) }) }
@@ -131,7 +138,7 @@ struct JobDetail: View {
     // MARK: riepilogo: prima ciò che serve per la sala, poi le migliorie facoltative
     func summary(_ r: Report, _ items: [FixItem], _ todo: [Finding]) -> some View {
         let eItems = items.filter(\.essential), pItems = items.filter { !$0.essential }
-        let eTodo = todo.filter { isEssential($0) }, pTodo = r.findings.filter { $0.fixes.isEmpty && $0.sev >= .warn && !isEssential($0) }
+        let eTodo = todo.filter { isEssential($0) }, pTodo = r.visible.filter { $0.fixes.isEmpty && $0.sev >= .warn && !isEssential($0) }
         let safeE = eItems.flatMap { $0.hints }.filter { !isHeavy($0) }, safeP = pItems.flatMap { $0.hints }.filter { !isHeavy($0) }
         let nE = eItems.count + eTodo.count, nP = pItems.count + pTodo.count
         return VStack(alignment: .leading, spacing: 16) {
@@ -153,6 +160,17 @@ struct JobDetail: View {
                         Text("Non servono per andare in sala: rendono il file più compatibile o più bello.").font(.caption).foregroundStyle(.secondary)
                         if !safeP.isEmpty && pItems.filter({ $0.hints.allSatisfy { !isHeavy($0) } }).count >= 2 { Button("Applica le migliorie sicure") { store.confirmFix(job, plan(safeP)) { sheetPlan = plan(safeP) } }.disabled(job.fixProgress != nil) }
                         ForEach(pItems) { fixRow($0, plus: true) }; ForEach(pTodo) { manualRow($0, plus: true) }
+                    }
+                }
+            }
+            let ign = r.ignored
+            if !ign.isEmpty {
+                Accordion(title: "Verificate da te, non sono un problema (\(Set(ign.map(\.sig)).count))", expanded: $showIgnored, font: .subheadline.weight(.semibold)) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(Set(ign.map(\.sig))).sorted(), id: \.self) { sg in
+                            let t = ign.first { $0.sig == sg }!.title
+                            HStack { Image(systemName: "checkmark.circle").foregroundStyle(.green); Text(splitTitle(t).0 + (splitTitle(t).1.isEmpty ? "" : " — " + splitTitle(t).1)).font(.callout); Spacer(); Button("Rimetti tra le segnalazioni") { withAnimation { restore([sg]) } }.controlSize(.small) }
+                        }
                     }
                 }
             }
@@ -180,6 +198,7 @@ struct JobDetail: View {
                 if it.times.count > 1 { Text(timesText(it.times, more: it.count - it.times.count)).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
                 if let t = it.thumb, let img = NSImage(contentsOf: t) { Image(nsImage: img).resizable().scaledToFit().frame(maxHeight: 120).cornerRadius(5) }
                 else if let t0 = it.times.first, ["Video", "Sottotitoli", "File"].contains(it.area) { FrameThumb(url: job.url, time: t0) }
+                dismissButton(it.sigs)
             }.padding(.leading, 32) }
         }
         .padding(.horizontal, 12).padding(.vertical, 10).background(RoundedRectangle(cornerRadius: 10).fill((plus ? Color.blue : it.sev.color).opacity(0.07)))
@@ -199,6 +218,7 @@ struct JobDetail: View {
                 if !f.detail.isEmpty { Text(f.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                 if let t = f.thumb, let img = NSImage(contentsOf: t) { Image(nsImage: img).resizable().scaledToFit().frame(maxHeight: 120).cornerRadius(5) }
                 else if let t0 = f.time, ["Video", "Sottotitoli"].contains(f.area) { FrameThumb(url: job.url, time: t0) }
+                dismissButton([f.sig])
             }.padding(.leading, 32) }
         }
         .padding(.horizontal, 12).padding(.vertical, 8).background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.07)))
