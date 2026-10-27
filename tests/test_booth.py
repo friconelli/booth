@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Prova Movie Preflight su film sintetici con difetti noti: ogni controllo deve scattare quando deve e non quando non deve.
-Uso: python3 tests/test_moviepreflight.py   (usa dist/moviepreflight; serve ffmpeg)"""
+"""Prova Booth su film sintetici con difetti noti: ogni controllo deve scattare quando deve e non quando non deve.
+Uso: python3 tests/test_booth.py   (usa dist/booth; serve ffmpeg)"""
 import os, re, subprocess, sys, tempfile, shutil
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))); BIN = os.path.join(ROOT, "dist", "moviepreflight")
-T = tempfile.mkdtemp(prefix="moviepreflight-test-"); ok = bad = 0
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))); BIN = os.path.join(ROOT, "dist", "booth")
+T = tempfile.mkdtemp(prefix="booth-test-"); ok = bad = 0
 def ff(*a): subprocess.run(["ffmpeg", "-y", "-nostdin", "-loglevel", "error", *a], check=True, stdin=subprocess.DEVNULL)
 def check(c, msg):
     global ok, bad
@@ -153,7 +153,7 @@ try:
     check(rc == 0 and tracks(ac, "audio")[0]["codec_name"] == "ac3" and m is not None and abs(float(m.group(1)) - float(m.group(2))) < 1.0, f"conversione in AC-3 senza cambiare il volume ({m.group(1) if m else '?'} → {m.group(2) if m else '?'} LUFS)")
     o = analyze(ac); check("non Dolby" not in o and "Dolby: sì — Dolby Digital (AC-3)" in o, "dopo la conversione la traccia risulta Dolby")
     print("== parlato (whisper)")
-    if shutil.which("say") and os.path.exists(os.path.expanduser("~/Library/Application Support/Movie Preflight/models/ggml-base.bin")):
+    if shutil.which("say") and os.path.exists(os.path.expanduser("~/Library/Application Support/Booth/models/ggml-base.bin")):
         N = 100   # 100 frasi sintetiche con tempi noti
         sentsIT = ["Buongiorno a tutti, oggi parleremo di una storia molto importante.", "Non ho mai visto una cosa del genere in tutta la mia vita.", "Vieni qui subito, abbiamo moltissime cose da fare prima di sera.",
                    "La macchina è partita ieri mattina e non è ancora tornata a casa.", "Dimmi la verità, perché non mi hai chiamato quando sei arrivato?", "Il tempo è cambiato molto negli ultimi anni, e non solo qui da noi."]
@@ -216,6 +216,48 @@ try:
     check(rc != 0 and "annullata" in o and os.path.getsize(fb) == before_size and not os.path.exists(fb.replace(".mkv", " (corretto).mkv")), "correzione che peggiora i dialoghi: annullata, file intatto, nessuna copia creata")
     pl = os.path.join(T, "pulito.mkv"); rc, o = fix(pl, "--level", "0"); m = re.search(r"dopo:\s+(-?[\d.]+) LUFS", o)
     check(rc == 0 and m is not None and abs(float(m.group(1)) + 24) < 2.5 and "guadagno fisso" in o, f"volume portato a -24 LUFS con guadagno fisso ({m.group(1) if m else '?'} LUFS)")
+    print("== unione di due copie")
+    DM = 400
+    def gate(seed, rate=7, dens=0.35): return f"volume='if(lt(abs(mod(sin(floor(t*{rate})*{seed})*43758.5453,1)),{dens}),1,0.03)':eval=frame"
+    ME = f"anoisesrc=d={DM}:c=pink:a=0.5:r=48000,{gate(12.9898)}"           # musica ed effetti: uguali nelle due copie
+    IT = f"sine=f=450:d={DM}:r=48000,{gate(78.233, 5)}"                      # «dialoghi» italiani
+    EN = f"sine=f=620:d={DM}:r=48000,{gate(39.425, 5)}"                      # «dialoghi» inglesi
+    def mix(dlg, post=""): return f"{ME}[m];{dlg}[d];[m][d]amix=inputs=2:normalize=0,aformat=channel_layouts=stereo{post}"
+    def film(name, size, fps, audio_graph, lang, dur):
+        out = os.path.join(T, name)
+        ff("-f", "lavfi", "-i", f"testsrc2=s={size}:r={fps}:d={dur}", "-filter_complex", audio_graph + "[a]", "-map", "0:v", "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "800k" if size == "640x360" else "3000k",
+           "-c:a", "aac", "-b:a", "192k", "-metadata:s:a:0", f"language={lang}", "-shortest", out); return out
+    truth = os.path.join(T, "verita_it.mka"); ff("-filter_complex", mix(IT) + "[a]", "-map", "[a]", "-c:a", "pcm_s16le", truth)   # l'audio italiano giusto sul tempo della copia buona
+    best = film("buona.mkv", "1280x720", "24000/1001", mix(EN), "eng", DM)
+    pal = film("pal.mkv", "640x360", 25, mix(IT, ",adelay=2300:all=1,asetrate=50050,aresample=48000"), "ita", round((DM + 2.3) * 23.976 / 25, 2))   # 2,3 s in più in testa, accelerata a 25 fps
+    def merge(*a):
+        try: r = subprocess.run([BIN, "--merge", *a], capture_output=True, text=True, timeout=600); return r.returncode, r.stdout
+        except subprocess.TimeoutExpired: return -9, "BLOCCATO"
+    def sync(f, t): o = subprocess.run([BIN, "--sync-point", truth, "0", f, "0", str(t)], capture_output=True, text=True).stdout; m = re.search(r"a salti: d=([-+\d.]+)", o); return float(m.group(1)) if m else 99
+    rc, o = merge(pal, best, "--align-only"); m = re.search(r"ALLINEATO: k=([\d.]+) d=([-+\d.]+)", o)
+    check(rc == 0 and "B [immagine]" in o and "audio: Aa0" in o, "proposta: immagine dalla copia migliore (720p), audio italiano dall'altra")
+    check(m is not None and abs(float(m.group(1)) - 23.976 / 25) < 1e-4 and abs(float(m.group(2)) - 2.3) < 0.03, f"velocità 25 → 23,976 e scarto di 2,3 s trovati (k={m.group(1) if m else '?'}, d={m.group(2) if m else '?'})")
+    hp, hb = sha(pal), sha(best); rc, o = merge(pal, best); out = os.path.join(T, "buona (unito).mkv")
+    check(rc == 0 and os.path.exists(out) and sha(pal) == hp and sha(best) == hb, "film unito creato, i due originali identici byte per byte")
+    if os.path.exists(out):
+        v, a = tracks(out, "video"), tracks(out, "audio")
+        check(len(v) == 1 and v[0]["width"] == 1280 and len(a) == 1 and a[0]["codec_name"] == "ac3" and a[0]["tags"].get("language") == "ita" and a[0]["disposition"]["default"] == 1, "immagine 1280×720 e audio italiano predefinito (Dolby Digital, velocità corretta)")
+        ds = [sync(out, t) for t in (60, 200, 340)]; check(all(abs(d) < 0.03 for d in ds), "audio italiano a tempo con l'immagine in tutto il film (" + ", ".join(f"{d * 1000:+.0f} ms" for d in ds) + ")")
+    same = film("stessa_vel.mkv", "640x360", "24000/1001", mix(IT, ",atrim=start=1.5,asetpts=PTS-STARTPTS"), "ita", DM - 1.5)   # stesso frame rate, audio che parte 1,5 s dopo
+    rc, o = merge(best, same, "--audio", "b0,a0", "--default", "b0", "--output", os.path.join(T, "copia.mkv")); cp = os.path.join(T, "copia.mkv")
+    check(rc == 0 and "copiato senza perdite" in o and os.path.exists(cp) and [s["codec_name"] for s in tracks(cp, "audio")] == ["aac", "aac"], "stesso frame rate: traccia italiana copiata senza ricodifica, ordine delle tracce rispettato")
+    if os.path.exists(cp): ds = [sync(cp, t) for t in (60, 300)]; check(all(abs(d) < 0.03 for d in ds), "copia senza perdite spostata di 1,5 s e a tempo (" + ", ".join(f"{d * 1000:+.0f} ms" for d in ds) + ")")
+    extra = film("scena_in_piu.mkv", "640x360", "24000/1001", f"{ME}[m];{IT}[d];[m][d]amix=inputs=2:normalize=0,aformat=channel_layouts=stereo,asplit[x][y];[x]atrim=0:200,asetpts=PTS-STARTPTS[p];[y]atrim=200,asetpts=PTS-STARTPTS[q];anoisesrc=d=6:c=white:a=0.6:r=48000,{gate(93.11, 9)},aformat=channel_layouts=stereo[n];[p][n][q]concat=n=3:v=0:a=1", "ita", DM + 6)
+    rc, o = merge(best, extra, "--audio", "b0", "--output", os.path.join(T, "piu.mkv")); pu = os.path.join(T, "piu.mkv")
+    check(rc == 0 and re.search(r"a 3:2\d.* 6\.0 s in più", o) is not None, "scena di 6 s in più nella copia italiana: trovata e saltata")
+    if os.path.exists(pu): ds = [sync(pu, t) for t in (100, 300)]; check(all(abs(d) < 0.03 for d in ds), "prima e dopo la scena saltata l'audio è a tempo (" + ", ".join(f"{d * 1000:+.0f} ms" for d in ds) + ")")
+    less = film("scena_in_meno.mkv", "640x360", "24000/1001", mix(IT, ",asplit[x][y];[x]atrim=0:150,asetpts=PTS-STARTPTS[p];[y]atrim=155,asetpts=PTS-STARTPTS[q];[p][q]concat=n=2:v=0:a=1"), "ita", DM - 5)
+    rc, o = merge(best, less, "--audio", "b0", "--output", os.path.join(T, "meno.mkv")); me = os.path.join(T, "meno.mkv")
+    check(rc == 0 and re.search(r"a 2:[23]\d.* mancano 5\.0 s", o) is not None, "scena di 5 s mancante nella copia italiana: lì resta silenzio")
+    if os.path.exists(me): ds = [sync(me, t) for t in (80, 300)]; check(all(abs(d) < 0.03 for d in ds), "prima e dopo il silenzio l'audio è a tempo (" + ", ".join(f"{d * 1000:+.0f} ms" for d in ds) + ")")
+    other = film("altro_film.mkv", "640x360", "24000/1001", f"anoisesrc=d={DM}:c=brown:a=0.5:r=48000,{gate(55.55, 6)},aformat=channel_layouts=stereo", "ita", DM)
+    rc, o = merge(best, other, "--audio", "b0", "--output", os.path.join(T, "altro.mkv"))
+    check(rc != 0 and "NON ALLINEATO" in o and not os.path.exists(os.path.join(T, "altro.mkv")), "film diverso: unione rifiutata, nessun file creato")
 finally:
     shutil.rmtree(T, ignore_errors=True)
 print(f"\n{ok} controlli ok, {bad} falliti"); sys.exit(1 if bad else 0)

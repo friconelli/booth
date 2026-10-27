@@ -1,11 +1,11 @@
 import Foundation
 
 // MARK: modello vocale (whisper.cpp, MIT)
-let modelDir = NSHomeDirectory() + "/Library/Application Support/Movie Preflight/models"
+let modelDir = NSHomeDirectory() + "/Library/Application Support/Booth/models"
 let modelURL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"   // 148 MB, multilingue
 let modelBytes = 147_951_465
 func whisperModelPath() -> String? {
-    if let e = ProcessInfo.processInfo.environment["MOVIEPREFLIGHT_MODEL"], FileManager.default.fileExists(atPath: e) { return e }
+    if let e = ProcessInfo.processInfo.environment["BOOTH_MODEL"], FileManager.default.fileExists(atPath: e) { return e }
     let p = modelDir + "/ggml-base.bin"
     return ((try? FileManager.default.attributesOfItem(atPath: p)[.size] as? Int) ?? 0) == modelBytes ? p : nil
 }
@@ -107,7 +107,7 @@ func scanSpeech(_ pr: Probe, _ path: String, _ tmp: URL, _ c: Collector, model: 
     }
     // sincronia dei sottotitoli di testo rispetto al parlato della traccia principale
     let main = pr.audio.firstIndex { disp($0, "default") == 1 } ?? 0
-    if ProcessInfo.processInfo.environment["MOVIEPREFLIGHT_DEBUG"] != nil { for w in bySpeech[main] ?? [] { FileHandle.standardError.write(Data("finestra \(w.start) lang=\(w.lang) segmenti=\(w.segments.count) parlato=\(w.speechSecs) primi=\(w.segments.prefix(3))\n".utf8)) } }
+    if ProcessInfo.processInfo.environment["BOOTH_DEBUG"] != nil { for w in bySpeech[main] ?? [] { FileHandle.standardError.write(Data("finestra \(w.start) lang=\(w.lang) segmenti=\(w.segments.count) parlato=\(w.speechSecs) primi=\(w.segments.prefix(3))\n".utf8)) } }
     guard let mainWins = bySpeech[main]?.filter({ $0.segments.count >= 4 }), mainWins.count >= 2, let ff = tool("ffmpeg") else { return }
     for (i, s) in pr.subs.enumerated() where !imageSubs.contains((s["codec_name"] as? String) ?? "") && disp(s, "forced") != 1 {
         let f = tmp.appendingPathComponent("sync\(i).srt"); run(ff, ["-nostdin", "-y", "-v", "error", "-i", path, "-map", "0:s:\(i)", "-f", "srt", f.path])
@@ -115,7 +115,7 @@ func scanSpeech(_ pr: Probe, _ path: String, _ tmp: URL, _ c: Collector, model: 
         let cues = parseSRT(txt).filter { !$0.t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }; guard cues.count >= 50 else { continue }
         let res = mainWins.compactMap { w -> (Double, Double, Double, Double)? in alignCues(speech: w.segments, cues: cues, window: (w.start, w.start + L)).map { ($0.delta, $0.base, $0.best, w.start) } }
         guard res.count >= 2 else { continue }
-        if ProcessInfo.processInfo.environment["MOVIEPREFLIGHT_DEBUG"] != nil { FileHandle.standardError.write(Data("sync sottotitoli \(i + 1): \(res.map { String(format: "t=%.0f δ=%+.2f base=%.2f best=%.2f", $0.3, $0.0, $0.1, $0.2) })\n".utf8)) }
+        if ProcessInfo.processInfo.environment["BOOTH_DEBUG"] != nil { FileHandle.standardError.write(Data("sync sottotitoli \(i + 1): \(res.map { String(format: "t=%.0f δ=%+.2f base=%.2f best=%.2f", $0.3, $0.0, $0.1, $0.2) })\n".utf8)) }
         let n = "sottotitoli \(i + 1)" + (lang(s).isEmpty ? "" : " (\(langLabel(lang(s))))")
         // per ogni tratto: allineato (la correlazione senza spostamento è già alta), sfasato (uno spostamento la alza nettamente) o inutilizzabile
         enum K { case aligned, shifted(Double), unknown }

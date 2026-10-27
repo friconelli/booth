@@ -25,7 +25,7 @@ func analyze(_ url: URL, progress: @escaping (Double, String) -> Void = { _, _ i
         rep.findings = col.findings; rep.seconds = Date().timeIntervalSince(t0); return rep
     }
     rep.duration = pr.duration
-    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("moviepreflight-" + UUID().uuidString); try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("booth-" + UUID().uuidString); try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: tmp) }
 
     let nAudio = min(pr.audio.count, 3)

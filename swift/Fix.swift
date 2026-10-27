@@ -145,7 +145,7 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
     // 0) cancellazione di una scritta: si ricodificano solo i primi secondi (mkvmerge + ffmpeg) e poi, se serve, si applica il resto della correzione alla copia
     if !plan.eraseText.isEmpty {
         guard ext == "mkv" else { return FixResult(ok: false, message: "Cancellare una scritta dall'immagine funziona per ora solo sui file .mkv.") }
-        let work = output.deletingLastPathComponent().appendingPathComponent(".moviepreflight-\(UUID().uuidString.prefix(8))")
+        let work = output.deletingLastPathComponent().appendingPathComponent(".booth-\(UUID().uuidString.prefix(8))")
         defer { try? FileManager.default.removeItem(at: work) }
         let (erased, why) = eraseTextInVideo(source: url, probe: pr, regions: plan.eraseText, work: work, progress: { progress($0 * 0.9, $1) }, lines: &lines)
         guard let e = erased else { return FixResult(ok: false, message: (why ?? "Cancellazione non riuscita.") + " L'originale non è stato toccato.", lines: lines) }
@@ -194,8 +194,8 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
     if let free = (try? dir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage, Double(free) < pr.size * 1.05 + 1e8 {
         return FixResult(ok: false, message: "Spazio insufficiente: servono almeno \(fmtBytes(pr.size * 1.05)) liberi.")
     }
-    let tmp = dir.appendingPathComponent(".\(base).moviepreflight-tmp.\(ext)"); try? FileManager.default.removeItem(at: tmp)
-    let work = FileManager.default.temporaryDirectory.appendingPathComponent("moviepreflight-fix-" + UUID().uuidString); try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+    let tmp = dir.appendingPathComponent(".\(base).booth-tmp.\(ext)"); try? FileManager.default.removeItem(at: tmp)
+    let work = FileManager.default.temporaryDirectory.appendingPathComponent("booth-fix-" + UUID().uuidString); try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: work); try? FileManager.default.removeItem(at: tmp) }
 
     let s0 = 0.0, e0 = pr.duration

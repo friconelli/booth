@@ -17,6 +17,39 @@ if let f = arg("--meta").first {   // prova: cerca i dati del film dal nome del 
     if let m = fetchMovieMeta(for: u) { print("trovato \(m.wikidataID): «\(m.title)» (\(m.originalTitle ?? "—")) \(m.year.map(String.init) ?? "—") · \(m.directors.joined(separator: ", ")) · \(m.runtimeMin.map { "\(Int($0)) min" } ?? "durata ?") · lingua \(m.originalLang ?? "?") · poster \(m.posterURL != nil ? "sì" : "no")\nnome libreria: \(m.libraryName)\n\(String((m.summary ?? "").prefix(160)))") } else { print("non trovato") }
     exit(0)
 }
+if let i = CommandLine.arguments.firstIndex(of: "--sync-point"), i + 5 < CommandLine.arguments.count {   // diagnosi: --sync-point A tracciaA B tracciaB secondi → scarto letto a salti e dall'intera traccia
+    let c = CommandLine.arguments; let a = c[i + 1], ta = Int(c[i + 2]) ?? 0, b = c[i + 3], tb = Int(c[i + 4]) ?? 0, t = Double(c[i + 5]) ?? 600
+    if let p = measurePoint(ref: (a, ta), other: (b, tb, 48000), k: 1, t: t, guess: 0, search: 5, len: 30) { print(String(format: "a salti: d=%+.4f corr=%.2f", p.d, p.corr)) }
+    let da = Probe(a)?.duration ?? 0, db = Probe(b)?.duration ?? 0
+    let ea = fullEnvelope(a, track: ta, duration: da), eb = fullEnvelope(b, track: tb, duration: db)
+    if let p = lagSearch(ea, eb, t: t, len: 30, guess: 0, search: 5) { print(String(format: "intera traccia: d=%+.4f corr=%.2f  (inviluppi %.1f s e %.1f s, durate %.1f e %.1f)", p.d, p.corr, Double(ea.count) / envRate, Double(eb.count) / envRate, da, db)) }
+    exit(0)
+}
+// Unione di due copie: --merge A B [--video a|b] [--audio B0,A1] [--subs A0] [--default B0] [--output PATH] [--align-only]   (senza scelte: quella proposta dall'app)
+if let i = CommandLine.arguments.firstIndex(of: "--merge"), i + 2 < CommandLine.arguments.count {
+    let urls = [CommandLine.arguments[i + 1], CommandLine.arguments[i + 2]].map { URL(fileURLWithPath: $0) }
+    guard let a = loadMergeSource(urls[0], src: 0), let b = loadMergeSource(urls[1], src: 1) else { print("ERRORE: file illeggibile"); exit(1) }
+    let s = [a, b], auto = autoSelect(s)
+    func ids(_ n: String, _ kind: String) -> [String]? { arg(n).first.map { $0.split(separator: ",").map { x in let u = x.uppercased(); return String(u.prefix(1)) + kind + String(u.dropFirst()) } } }
+    var plan = MergePlan(video: arg("--video").first.map { $0 == "b" ? 1 : 0 } ?? auto.video, audio: ids("--audio", "a") ?? auto.audio, subs: ids("--subs", "s") ?? auto.subs, defaultAudio: nil, output: arg("--output").first.map { URL(fileURLWithPath: $0) })
+    plan.defaultAudio = ids("--default", "a")?.first ?? (plan.audio.contains(auto.def ?? "") ? auto.def : plan.audio.first)
+    for (n, x) in s.enumerated() { print("\(n == 0 ? "A" : "B")\(n == plan.video ? " [immagine]" : ""): \(x.url.lastPathComponent) — \(x.video?.summary ?? "?") punteggio \(Int(x.video?.score ?? 0))") }
+    print("audio: \(plan.audio.joined(separator: ",")) predefinito \(plan.defaultAudio ?? "—") · sottotitoli: \(plan.subs.joined(separator: ","))")
+    func prog(_ v: Double, _ st: String) { FileHandle.standardError.write(Data(String(format: "\r%3.0f%% %@                    ", v * 100, st).utf8)) }
+    var al: Alignment?
+    let other = (plan.audio + plan.subs).compactMap { id in (a.tracks + b.tracks).first { $0.id == id } }.filter { $0.src != plan.video }
+    if let ot = other.first(where: { $0.kind == "a" }) ?? s[1 - plan.video].tracks.first(where: { $0.kind == "a" }), !other.isEmpty || CommandLine.arguments.contains("--align-only") {
+        switch alignAudio(v: s[plan.video], o: s[1 - plan.video], oTrack: ot, progress: prog) {
+        case .ok(let x): al = x; FileHandle.standardError.write(Data("\n".utf8)); print(String(format: "ALLINEATO: k=%.6f d=%+.4f", x.k, x.d)); x.lines.forEach { print("  " + $0) }
+            x.segments.forEach { print(String(format: "  parte %@ → %@  %@", hms($0.start), hms($0.end), $0.d.map { String(format: "d=%+.4f", $0) } ?? "silenzio")) }
+            x.points.forEach { print(String(format: "  punto %@ d=%+.4f corr=%.2f picco×%.1f%@", hms($0.t), $0.d, $0.corr, $0.ratio, $0.good ? "" : " (scartato)")) }
+        case .fail(let why, let pts): FileHandle.standardError.write(Data("\n".utf8)); print("NON ALLINEATO: \(why)"); pts.forEach { print(String(format: "  punto %@ d=%+.4f corr=%.2f picco×%.1f", hms($0.t), $0.d, $0.corr, $0.ratio)) }; exit(2)
+        }
+    }
+    if CommandLine.arguments.contains("--align-only") { exit(0) }
+    let r = runMerge(s, plan, alignment: al, progress: prog)
+    FileHandle.standardError.write(Data("\n".utf8)); print((r.ok ? "OK: " : "ERRORE: ") + r.message); r.lines.forEach { print("  " + $0) }; exit(r.ok ? 0 : 1)
+}
 // Correzioni da riga di comando (per i test): --fix FILE [--audio-default N] [--sub-default none|N] [--lang a0=ita,s1=eng] [--clean-sub N] [--drop-sub N] [--drop-audio N] [--erase-text] [--normalize N]   (N parte da 0)
 if let f = arg("--fix").first {
     var p = FixPlan()
@@ -43,4 +76,4 @@ if let f = arg("--fix").first {
     }
     FileHandle.standardError.write(Data("\n".utf8)); print((r.ok ? "OK: " : "ERRORE: ") + r.message); r.lines.forEach { print("  " + $0) }; exit(r.ok ? 0 : 1)
 }
-MoviePreflightApp.main()
+BoothApp.main()

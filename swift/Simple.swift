@@ -57,7 +57,7 @@ struct Accordion<Content: View>: View {
 /// Fotogramma del film a un dato secondo, estratto quando serve (e ricordato).
 final class FrameCache {
     static let shared = FrameCache(); private var cache: [String: NSImage] = [:]; private let lock = NSLock()
-    private let dir = FileManager.default.temporaryDirectory.appendingPathComponent("moviepreflight-frames"); private let q = DispatchQueue(label: "fotogrammi", qos: .utility)
+    private let dir = FileManager.default.temporaryDirectory.appendingPathComponent("booth-frames"); private let q = DispatchQueue(label: "fotogrammi", qos: .utility)
     func frame(_ url: URL, _ t: Double, _ done: @escaping (NSImage?) -> Void) {
         let key = "\(url.path)@\(Int(t))"; lock.lock(); let hit = cache[key]; lock.unlock()
         if let h = hit { done(h); return }
@@ -123,9 +123,9 @@ struct JobDetail: View {
             .sheet(isPresented: $showCompare) { CompareView(pair: ComparePair(before: job.origURL ?? job.url, beforeReport: job.origReport ?? job.report!, after: job.url, afterReport: job.report!, lines: job.fixLog)) }
             .sheet(isPresented: Binding(get: { sheetPlan != nil }, set: { if !$0 { sheetPlan = nil } })) { FixSheet(job: job, report: r, plan: sheetPlan ?? FixPlan(), store: store) }
             .onChange(of: job.fixProgress != nil) { running in if !running { sheetPlan = nil } }
-            .onChange(of: job.hasCorrected) { c in if c && ProcessInfo.processInfo.environment["MOVIEPREFLIGHT_OPENCOMPARE"] != nil { showCompare = true } }
-            .onAppear { if ProcessInfo.processInfo.environment["MOVIEPREFLIGHT_EXPAND"] != nil { showPlus = true; open = Set(items.map(\.id) + todo.map { $0.id.uuidString }) } }   // solo per le prove a vista
-            .onAppear { if ProcessInfo.processInfo.environment["MOVIEPREFLIGHT_SHEET"] != nil { var p = FixPlan(); r.findings.forEach { $0.fixes.forEach { p.merge($0) } }; sheetPlan = p } }   // solo per le prove a vista
+            .onChange(of: job.hasCorrected) { c in if c && ProcessInfo.processInfo.environment["BOOTH_OPENCOMPARE"] != nil { showCompare = true } }
+            .onAppear { if ProcessInfo.processInfo.environment["BOOTH_EXPAND"] != nil { showPlus = true; open = Set(items.map(\.id) + todo.map { $0.id.uuidString }) } }   // solo per le prove a vista
+            .onAppear { if ProcessInfo.processInfo.environment["BOOTH_SHEET"] != nil { var p = FixPlan(); r.findings.forEach { $0.fixes.forEach { p.merge($0) } }; sheetPlan = p } }   // solo per le prove a vista
         } else {
             VStack(spacing: 12) {
                 Text(job.url.lastPathComponent).font(.headline).lineLimit(2)
@@ -146,7 +146,7 @@ struct JobDetail: View {
                 Image(systemName: nE == 0 ? "checkmark.circle.fill" : (r.worst == .error ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")).font(.system(size: 30)).foregroundStyle(nE == 0 ? Color.green : r.worst.color)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(nE == 0 ? "Pronto per la sala" : (eItems.count > 0 ? "\(nE) \(nE == 1 ? "cosa indispensabile" : "cose indispensabili") da sistemare" : "\(nE) \(nE == 1 ? "cosa" : "cose") da controllare")).font(.title3.weight(.semibold))
-                    Text(nE == 0 ? (nP > 0 ? "Nessun problema indispensabile. Ci sono \(nP) migliorie facoltative." : "Non ho trovato problemi.") : (nP > 0 ? "Più \(nP) migliorie facoltative, qui sotto." : "Prima di fare qualsiasi cosa ti mostro cosa cambia.")).font(.callout).foregroundStyle(.secondary)
+                    Text(nE == 0 ? (nP > 0 ? (nP == 1 ? "Nessun problema indispensabile. C'è una miglioria facoltativa." : "Nessun problema indispensabile. Ci sono \(nP) migliorie facoltative.") : "Non ho trovato problemi.") : (nP > 0 ? (nP == 1 ? "Più una miglioria facoltativa, qui sotto." : "Più \(nP) migliorie facoltative, qui sotto.") : "Prima di fare qualsiasi cosa ti mostro cosa cambia.")).font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if eItems.filter({ $0.hints.allSatisfy { !isHeavy($0) } }).count >= 2 {
@@ -271,7 +271,7 @@ struct JobDetail: View {
     }
     func hmLabel(_ s: Double) -> String { let m = Int(s / 60); return m >= 60 ? "\(m / 60) h \(m % 60) min" : "\(m) min" }
     func save(_ r: Report) {
-        let p = NSSavePanel(); p.nameFieldStringValue = r.file.deletingPathExtension().lastPathComponent + " — preflight.txt"; p.allowedContentTypes = [.plainText]
+        let p = NSSavePanel(); p.nameFieldStringValue = r.file.deletingPathExtension().lastPathComponent + " — Booth.txt"; p.allowedContentTypes = [.plainText]
         if p.runModal() == .OK, let u = p.url { try? r.text.write(to: u, atomically: true, encoding: .utf8) }
     }
 }

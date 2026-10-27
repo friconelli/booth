@@ -1,6 +1,6 @@
 # Componenti di terze parti
 
-Movie Preflight è software libero, distribuito con licenza **GNU GPL v3** (vedi `LICENSE`). L'app include o usa questi programmi open source, di cui si riportano licenza e dove trovare il codice sorgente. Il codice di Movie Preflight è in https://github.com/friconelli/movie-preflight.
+Booth è software libero, distribuito con licenza **GNU GPL v3** (vedi `LICENSE`). L'app include o usa questi programmi open source, di cui si riportano licenza e dove trovare il codice sorgente. Il codice di Booth è in https://github.com/friconelli/movie-preflight.
 
 | Componente | Versione | Licenza | Sorgente |
 |---|---|---|---|

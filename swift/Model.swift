@@ -41,7 +41,7 @@ struct Report {
     var worst: Sev { essential.map(\.sev).max() ?? .ok }                                  // il verdetto dipende solo dalle indispensabili
     var verdict: String { switch worst { case .error: return "Problemi da risolvere"; case .warn: return "Da controllare"; default: return "Pronto per la sala" } }
     var text: String {
-        var s = "MOVIE PREFLIGHT — \(file.lastPathComponent)\nEsito: \(verdict)  (\(essential.count) indispensabili per la sala, \(extras.count) migliorie facoltative)\n"
+        var s = "BOOTH — \(file.lastPathComponent)\nEsito: \(verdict)  (\(essential.count) indispensabili per la sala, \(extras.count) migliorie facoltative)\n"
         func block(_ title: String, _ fs: [Finding]) {
             guard !fs.isEmpty else { return }; s += "\n\(title)\n"
             for f in fs.sorted(by: { $0.sev > $1.sev }) {

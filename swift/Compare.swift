@@ -51,7 +51,7 @@ final class CompareModel: ObservableObject {
     @Published var time: Double; @Published var stillA: NSImage?; @Published var stillB: NSImage?; @Published var cueA = ""; @Published var cueB = ""; @Published var busy = false
     @Published var audioTrackAfter = 0; @Published var subTrackAfter = 0; @Published var playing: String?
     private var wavA: URL?, wavB: URL?; private var pA: AVAudioPlayer?, pB: AVAudioPlayer?
-    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("moviepreflight-compare-" + UUID().uuidString)
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("booth-compare-" + UUID().uuidString)
     init(pair: ComparePair) {
         before = pair.before; after = pair.after; beforeReport = pair.beforeReport; afterReport = pair.afterReport
         let first = beforeReport.findings.filter { $0.sev >= .warn }.compactMap(\.time).first ?? afterReport.duration * 0.35
@@ -108,7 +108,7 @@ struct CompareView: View {
                 summary(d)
                 media.id("media")
             }.padding(18) }
-            .onAppear { if ProcessInfo.processInfo.environment["MOVIEPREFLIGHT_SCROLLMEDIA"] != nil { DispatchQueue.main.asyncAfter(deadline: .now() + 6) { proxy.scrollTo("media", anchor: .top) } } } }   // solo per le prove a vista
+            .onAppear { if ProcessInfo.processInfo.environment["BOOTH_SCROLLMEDIA"] != nil { DispatchQueue.main.asyncAfter(deadline: .now() + 6) { proxy.scrollTo("media", anchor: .top) } } } }   // solo per le prove a vista
         }.frame(width: 860, height: 760).onAppear { m.load() }
     }
     var verdicts: some View {

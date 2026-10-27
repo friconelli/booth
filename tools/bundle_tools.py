@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Copia gli strumenti open source usati dall'app (ffmpeg, ffprobe, mediainfo, whisper-cli) dentro l'app con tutte le librerie da cui dipendono e ne riscrive i percorsi, così funziona anche senza Homebrew.
 ffmpeg viene preso da vendor/ffmpeg-zimg (tools/build_ffmpeg.sh, con zscale) se esiste, altrimenti da Homebrew.
-Uso: tools/bundle_tools.py "dist/Movie Preflight.app/Contents/Resources"   → Resources/<strumenti>, Resources/lib/*.dylib"""
+Uso: tools/bundle_tools.py "dist/Booth.app/Contents/Resources"   → Resources/<strumenti>, Resources/lib/*.dylib"""
 import glob, os, re, shutil, subprocess, sys
 dest = os.path.abspath(sys.argv[1]); lib = os.path.join(dest, "lib"); os.makedirs(lib, exist_ok=True)
 SYS = ("/usr/lib/", "/System/")

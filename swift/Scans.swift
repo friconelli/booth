@@ -119,7 +119,7 @@ func scanCredits(_ pr: Probe, _ path: String, _ tmp: URL, _ c: Collector, progre
         lock.lock(); done += 1; let f = Double(done) / Double(max(frames.count, 1)); lock.unlock(); progress(0.4 + 0.6 * f)
     }
     // una segnalazione per ogni gruppo di fotogrammi vicini; la miniatura va copiata prima che la cartella temporanea sparisca
-    let outDir = FileManager.default.temporaryDirectory.appendingPathComponent("moviepreflight-thumbs"); try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+    let outDir = FileManager.default.temporaryDirectory.appendingPathComponent("booth-thumbs"); try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
     var groups: [[(t: Double, text: String, url: URL, boxes: [(String, CGRect)])]] = []
     for h in hits.sorted(by: { $0.t < $1.t }) { if let l = groups.last?.last, h.t - l.t < 6 { groups[groups.count - 1].append(h) } else { groups.append([h]) } }
     for grp in groups {

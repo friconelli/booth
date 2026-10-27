@@ -1,8 +1,8 @@
 #!/bin/zsh
-# Compila Movie Preflight → dist/Movie Preflight.app. Uso: ./build.sh
+# Compila Booth → dist/Booth.app. Uso: ./build.sh
 # Usa ffmpeg/ffprobe di Homebrew (/opt/homebrew/bin) oppure quelli messi in Contents/Resources.
 set -e; cd "$(dirname "$0")"
-NAME="Movie Preflight"; EXE=moviepreflight; BUNDLE_ID=app.moviepreflight.MoviePreflight; VERSION=${VERSION:-0.1.0}
+NAME="Booth"; EXE=booth; BUNDLE_ID=app.booth.Booth; VERSION=${VERSION:-0.2.0}
 SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX15.2.sdk
 A="dist/$NAME.app"; rm -rf "$A"; mkdir -p "$A/Contents/MacOS" "$A/Contents/Resources"
 swiftc -O -sdk $SDK -target arm64-apple-macos13.0 swift/*.swift -o "$A/Contents/MacOS/$EXE"
@@ -16,7 +16,7 @@ cat > "$A/Contents/Info.plist" <<P
 P
 # ffmpeg e ffprobe con le loro librerie dentro l'app (BUNDLE_FFMPEG=0 per saltare e usare quelli di Homebrew)
 [ "${BUNDLE_FFMPEG:-1}" = 1 ] && python3 tools/bundle_tools.py "$A/Contents/Resources"
-[ -f icon/MoviePreflight.icns ] && cp icon/MoviePreflight.icns "$A/Contents/Resources/MoviePreflight.icns" && sed -i '' 's|<key>CFBundlePackageType</key>|<key>CFBundleIconFile</key><string>MoviePreflight</string><key>CFBundlePackageType</key>|' "$A/Contents/Info.plist"
+[ -f icon/Booth.icns ] && cp icon/Booth.icns "$A/Contents/Resources/Booth.icns" && sed -i '' 's|<key>CFBundlePackageType</key>|<key>CFBundleIconFile</key><string>Booth</string><key>CFBundlePackageType</key>|' "$A/Contents/Info.plist"
 codesign --force -s - -r='designated => identifier "'$BUNDLE_ID'"' "$A"
-ln -sf "$NAME.app/Contents/MacOS/$EXE" dist/moviepreflight
+ln -sf "$NAME.app/Contents/MacOS/$EXE" dist/booth
 codesign --verify --deep --strict "$A" || { echo "firma non valida"; exit 1; }

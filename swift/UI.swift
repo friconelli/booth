@@ -11,7 +11,7 @@ final class Job: ObservableObject, Identifiable {
     init(_ u: URL) { url = u }
 }
 final class Store: ObservableObject {
-    @Published var jobs: [Job] = []; @Published var selection: UUID?; @Published var modelProgress: Double?; @Published var comparePair: ComparePair?; @Published var compareBusy = false
+    @Published var jobs: [Job] = []; @Published var selection: UUID?; @Published var modelProgress: Double?; @Published var comparePair: ComparePair?; @Published var compareBusy = false; @Published var mergeRequest: MergeRequest?
     private let q = DispatchQueue(label: "analisi")   // un film alla volta: le analisi usano già tutti i core
     static let exts: Set<String> = ["mp4", "mkv", "avi", "m4v", "mov"]
     func add(_ urls: [URL]) {
@@ -20,7 +20,7 @@ final class Store: ObservableObject {
             if d.boolValue { return ((try? FileManager.default.contentsOfDirectory(at: u, includingPropertiesForKeys: nil)) ?? []).sorted { $0.path < $1.path } }; return [u] }
             .filter { Store.exts.contains($0.pathExtension.lowercased()) }
         if !files.isEmpty { askOnline() }
-        if !files.isEmpty && whisperModelPath() == nil && tool("whisper-cli") != nil && !UserDefaults.standard.bool(forKey: "speechOfferAsked") && ProcessInfo.processInfo.environment["MOVIEPREFLIGHT_NOPROMPT"] == nil { UserDefaults.standard.set(true, forKey: "speechOfferAsked"); offerSpeechModel() }
+        if !files.isEmpty && whisperModelPath() == nil && tool("whisper-cli") != nil && !UserDefaults.standard.bool(forKey: "speechOfferAsked") && ProcessInfo.processInfo.environment["BOOTH_NOPROMPT"] == nil { UserDefaults.standard.set(true, forKey: "speechOfferAsked"); offerSpeechModel() }
         for u in files { let j = Job(u); jobs.append(j); selection = j.id; startAnalysis(j) }
     }
     func startAnalysis(_ j: Job) {
@@ -30,7 +30,7 @@ final class Store: ObservableObject {
             let r = analyze(j.url) { p, s in DispatchQueue.main.async { j.progress = p; j.stage = s } }
             DispatchQueue.main.async {
                 j.report = r; j.progress = 1; setVerdictTag(j.url, ok: r.essential.isEmpty)
-                if ProcessInfo.processInfo.environment["MOVIEPREFLIGHT_AUTOFIX"] != nil, j.origURL == nil {   // solo per le prove a vista: applica le correzioni sicure senza chiedere
+                if ProcessInfo.processInfo.environment["BOOTH_AUTOFIX"] != nil, j.origURL == nil {   // solo per le prove a vista: applica le correzioni sicure senza chiedere
                     var p = FixPlan(); r.findings.forEach { $0.fixes.filter { !isHeavy($0) }.forEach { p.merge($0) } }; p.rename = nil; if !p.isEmpty { self.fix(j, p) } }
             }
         }
@@ -118,19 +118,27 @@ final class Store: ObservableObject {
             DispatchQueue.main.async { self?.compareBusy = false; self?.comparePair = ComparePair(before: pair[0], beforeReport: a, after: pair[1], afterReport: b) }
         }
     }
+    /// Unisce due copie dello stesso film: l'immagine migliore da una, l'audio italiano dall'altra.
+    func mergeFiles() {
+        let p = NSOpenPanel(); p.allowsMultipleSelection = true; p.canChooseDirectories = false; p.message = "Scegli le due copie dello stesso film (⌘-clic per sceglierne due)"
+        guard p.runModal() == .OK else { return }
+        guard p.urls.count == 2 else { let a = NSAlert(); a.messageText = "Servono due film"; a.informativeText = "Seleziona esattamente due file: per esempio quello con l'immagine migliore e quello con l'audio italiano."; a.runModal(); return }
+        mergeRequest = MergeRequest(urls: p.urls)
+    }
     /// Consenso alle ricerche online (solo il titolo ricavato dal nome del file viene inviato a Wikidata e Wikipedia).
     func askOnline(force: Bool = false) {
-        if ProcessInfo.processInfo.environment["MOVIEPREFLIGHT_NOPROMPT"] != nil { onlineLookups = ProcessInfo.processInfo.environment["MOVIEPREFLIGHT_ONLINE"] != nil; return }   // solo per le prove a vista
+        if ProcessInfo.processInfo.environment["BOOTH_NOPROMPT"] != nil { onlineLookups = ProcessInfo.processInfo.environment["BOOTH_ONLINE"] != nil; return }   // solo per le prove a vista
         if !force && UserDefaults.standard.object(forKey: "metaConsent") != nil { return }
         let a = NSAlert(); a.messageText = "Cercare i dati del film online?"
-        a.informativeText = "Movie Preflight può trovare titolo, anno, regista, durata, locandina e descrizione su Wikidata e Wikipedia (servizi liberi, nessuna chiave). Per farlo invia soltanto il titolo e l'anno ricavati dal nome del file: i film non vengono mai inviati. Servono per confrontare la durata, suggerire il nome del file e mostrare la scheda del film."
+        a.informativeText = "Booth può trovare titolo, anno, regista, durata, locandina e descrizione su Wikidata e Wikipedia (servizi liberi, nessuna chiave). Per farlo invia soltanto il titolo e l'anno ricavati dal nome del file: i film non vengono mai inviati. Servono per confrontare la durata, suggerire il nome del file e mostrare la scheda del film."
         a.addButton(withTitle: UserDefaults.standard.bool(forKey: "metaConsent") ? "Lascia attivo" : "Consenti"); a.addButton(withTitle: UserDefaults.standard.bool(forKey: "metaConsent") ? "Disattiva" : "Non ora")
         let yes = a.runModal() == .alertFirstButtonReturn; UserDefaults.standard.set(yes, forKey: "metaConsent"); onlineLookups = yes
     }
     init() {
         onlineLookups = UserDefaults.standard.bool(forKey: "metaConsent")   // il consenso dato in precedenza vale anche ai prossimi avvii
         let e = ProcessInfo.processInfo.environment   // solo per le prove a vista
-        if let a = e["MOVIEPREFLIGHT_COMPARE_A"], let b = e["MOVIEPREFLIGHT_COMPARE_B"] { DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.compare([URL(fileURLWithPath: a), URL(fileURLWithPath: b)]) } }
+        if let a = e["BOOTH_MERGE_A"], let b = e["BOOTH_MERGE_B"] { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.mergeRequest = MergeRequest(urls: [URL(fileURLWithPath: a), URL(fileURLWithPath: b)]) } }
+        if let a = e["BOOTH_COMPARE_A"], let b = e["BOOTH_COMPARE_B"] { DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.compare([URL(fileURLWithPath: a), URL(fileURLWithPath: b)]) } }
     }
     func open() { let p = NSOpenPanel(); p.allowsMultipleSelection = true; p.canChooseDirectories = true; p.message = "Scegli uno o più film"; if p.runModal() == .OK { add(p.urls) } }
 }
@@ -144,11 +152,11 @@ struct ContentView: View {
     @ObservedObject var store: Store; @State private var hover = false
     var body: some View {
         Group {
-            if store.jobs.isEmpty { DropHint(store: store) }
+            if store.jobs.isEmpty { DropHint(store: store).sheet(item: $store.mergeRequest) { r in MergeView(urls: r.urls, store: store) } }
             else { HStack(spacing: 0) {
                 if store.jobs.count > 1 { List(store.jobs, selection: $store.selection) { j in JobRow(job: j).tag(j.id) }.frame(width: 250).listStyle(.sidebar); Divider() }   // la barra laterale serve solo con più film
                 if let j = store.jobs.first(where: { $0.id == store.selection }) { JobDetail(job: j, store: store).id(j.id) } else { Spacer() }
-            } }
+            }.sheet(item: $store.mergeRequest) { r in MergeView(urls: r.urls, store: store) } }
         }
         .frame(minWidth: 900, minHeight: 600)
         .sheet(item: $store.comparePair) { pair in CompareView(pair: pair, swap: { store.comparePair = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.comparePair = pair.swapped } }) }
@@ -158,21 +166,43 @@ struct ContentView: View {
         .toolbar {
             if let p = store.modelProgress { ToolbarItem { HStack { Text("Scarico il modello vocale…").font(.caption).foregroundStyle(.secondary); ProgressView(value: p).frame(width: 110) } } }
             if store.compareBusy { ToolbarItem { HStack { Text("Analizzo i due film…").font(.caption).foregroundStyle(.secondary); ProgressView().controlSize(.small) } } }
-            ToolbarItem { Button { store.compareFiles() } label: { Label("Confronta due film", systemImage: "rectangle.split.2x1") } }
-            ToolbarItem { Button { store.open() } label: { Label("Aggiungi film", systemImage: "plus") } }
+            if !store.jobs.isEmpty {   // sulla schermata iniziale le tre scelte ci sono già
+                ToolbarItem { Button { store.mergeFiles() } label: { Label("Unisci due copie", systemImage: "arrow.triangle.merge") }.help("Unisci due copie: immagine migliore da una, audio italiano dall'altra") }
+                ToolbarItem { Button { store.compareFiles() } label: { Label("Confronta due film", systemImage: "rectangle.split.2x1") }.help("Due versioni una accanto all'altra") }
+                ToolbarItem { Button { store.open() } label: { Label("Controlla un altro film", systemImage: "plus") }.help("Controlla un altro film") } }
         }
     }
 }
+/// Schermata iniziale: le tre cose che l'app sa fare, ognuna con una riga di spiegazione e il suo pulsante.
 struct DropHint: View {
     @ObservedObject var store: Store
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "film.stack").font(.system(size: 54, weight: .thin)).foregroundStyle(.secondary)
-            Text("Trascina qui un film").font(.title2.weight(.medium))
-            Text("mp4, mkv, avi — anche più file o una cartella").foregroundStyle(.secondary)
-            Text("Controllo di immagine, audio e sottotitoli: crediti del torrent, lingue, volume, sincronia, difetti tecnici.").font(.callout).foregroundStyle(.tertiary).multilineTextAlignment(.center).frame(maxWidth: 420)
-            Button("Scegli un film…") { store.open() }.controlSize(.large)
-        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        VStack(spacing: 28) {
+            VStack(spacing: 6) {
+                Text("Prepara un film per la sala").font(.largeTitle.weight(.semibold))
+                Text("Trascina qui un film (mp4, mkv, avi), anche più di uno o una cartella intera.").foregroundStyle(.secondary)
+            }
+            HStack(alignment: .top, spacing: 16) {
+                Choice(icon: "checkmark.seal", title: "Controlla un film", text: "Immagine, audio e sottotitoli: lingue, volume, sincronia, crediti del torrent e difetti tecnici. Poi lo corregge in una copia nuova.", button: "Scegli un film…", primary: true) { store.open() }
+                Choice(icon: "arrow.triangle.merge", title: "Unisci due copie", text: "Prende l'immagine migliore da una copia e l'audio italiano dall'altra, li allinea e te li fa controllare prima di salvare.", button: "Scegli le due copie…") { store.mergeFiles() }
+                Choice(icon: "rectangle.split.2x1", title: "Confronta due film", text: "Due versioni dello stesso film, per esempio l'originale e la copia corretta: cosa è stato risolto, cosa resta e le immagini fianco a fianco.", button: "Scegli i due film…") { store.compareFiles() }
+            }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: 820)
+            Text("Il file originale non viene mai modificato: ogni correzione o unione crea una copia nuova accanto.").font(.caption).foregroundStyle(.tertiary)
+        }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+struct Choice: View {
+    let icon: String, title: String, text: String, button: String; var primary = false; let action: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Image(systemName: icon).font(.system(size: 26, weight: .light)).foregroundStyle(primary ? Color.accentColor : .secondary).frame(height: 34, alignment: .leading)
+            Text(title).font(.title3.weight(.semibold))
+            Text(text).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            if primary { Button(button, action: action).buttonStyle(.borderedProminent).controlSize(.large) } else { Button(button, action: action).controlSize(.large) }
+        }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.045)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(primary ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.08)))
     }
 }
 struct JobRow: View {

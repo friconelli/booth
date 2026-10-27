@@ -24,7 +24,7 @@ func parseFileName(_ url: URL) -> (title: String, year: Int?, director: String?)
 
 private func httpJSON(_ urlString: String) -> [String: Any]? {
     guard let u = URL(string: urlString) else { return nil }
-    var rq = URLRequest(url: u, timeoutInterval: 15); rq.setValue("MoviePreflight/0.1 (https://github.com/friconelli/movie-preflight)", forHTTPHeaderField: "User-Agent")
+    var rq = URLRequest(url: u, timeoutInterval: 15); rq.setValue("Booth/0.2 (https://github.com/friconelli/movie-preflight)", forHTTPHeaderField: "User-Agent")
     let sem = DispatchSemaphore(value: 0); var out: [String: Any]?
     URLSession.shared.dataTask(with: rq) { d, _, _ in if let d = d { out = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] }; sem.signal() }.resume()
     _ = sem.wait(timeout: .now() + 20); return out

@@ -1,9 +1,11 @@
-# Movie Preflight
+# Booth
 
-App Mac (Swift/SwiftUI, come Dolly) che controlla un film prima della proiezione: si trascina un mp4/mkv/avi (o più file, o una cartella) e restituisce dati tecnici e segnalazioni su immagine, audio e sottotitoli.
+(Fino alla 0.1 si chiamava *Movie Preflight*: al primo avvio Booth riprende le impostazioni e il modello vocale della vecchia app.)
+
+App Mac (Swift/SwiftUI, come Dolly) che controlla un film prima della proiezione: si trascina un mp4/mkv/avi (o più file, o una cartella) e restituisce dati tecnici e segnalazioni su immagine, audio e sottotitoli. Sa anche **unire due copie** dello stesso film: l'immagine migliore da una e l'audio italiano dall'altra, allineati in automatico e controllati a vista.
 
 ## Interfaccia
-Una scheda per film. In alto la locandina e i dati (da Wikidata/Wikipedia, solo con il consenso) e **una frase chiara**: «Pronto per la sala» oppure «3 cose da sistemare», con un solo pulsante grande **«Sistema tutto»** (raggruppa le correzioni sicure, esclude le eliminazioni di tracce e le ricodifiche lunghe). Sotto, **righe compatte**: titolo breve, traccia, secondo in cui compare il problema e un pulsante con l'azione («Ripara gli accenti», «Togli la pubblicità», «Converti in Dolby»…). Cliccando la riga si apre la spiegazione con i secondi e il **fotogramma** del film in quel punto. Ogni azione mostra prima il riepilogo e chiede conferma. Due schede: **Riepilogo** (solo ciò che serve) e **Dettagli** (note, dati tecnici, rianalisi, copia/salvataggio del rapporto, «Correggi a mano…»). La barra laterale compare solo con più di un film.
+La schermata iniziale propone le tre cose che l'app sa fare, ognuna con il suo pulsante: **Controlla un film**, **Unisci due copie**, **Confronta due film** (si può anche trascinare un film direttamente nella finestra). Poi una scheda per film. In alto la locandina e i dati (da Wikidata/Wikipedia, solo con il consenso) e **una frase chiara**: «Pronto per la sala» oppure «3 cose da sistemare», con un solo pulsante grande **«Sistema tutto»** (raggruppa le correzioni sicure, esclude le eliminazioni di tracce e le ricodifiche lunghe). Sotto, **righe compatte**: titolo breve, traccia, secondo in cui compare il problema e un pulsante con l'azione («Ripara gli accenti», «Togli la pubblicità», «Converti in Dolby»…). Cliccando la riga si apre la spiegazione con i secondi e il **fotogramma** del film in quel punto. Ogni azione mostra prima il riepilogo e chiede conferma. Due schede: **Riepilogo** (solo ciò che serve) e **Dettagli** (note, dati tecnici, rianalisi, copia/salvataggio del rapporto, «Correggi a mano…»). La barra laterale compare solo con più di un film.
 
 ## Indispensabile per la sala o miglioria?
 Ogni segnalazione è classificata (`isEssential` in `swift/Model.swift`). Il verdetto «Pronto per la sala» dipende **solo dalle indispensabili**; le migliorie stanno in una sezione chiusa.
@@ -53,10 +55,22 @@ Non inclusi: ingrandimento con IA (Real-ESRGAN è troppo lento per un film inter
 
 **L'originale non viene mai toccato.** Ogni correzione crea una copia accanto al film, chiamata «Titolo (corretto).ext» (o il nuovo nome, per la rinomina; mai sovrascrive file esistenti). Per le sole etichette in un mkv la copia è un **clone APFS** istantaneo (nessuno spazio in più finché non cambia) e `mkvpropedit` ci lavora dentro; per tutto il resto ffmpeg scrive un file temporaneo, l'app lo **verifica** (numero di tracce, durata, buchi nell'audio rispetto all'originale, qualità) e solo allora lo salva. Le correzioni successive aggiornano la stessa copia corretta; «Elimina la copia corretta» la manda nel Cestino e torna all'originale.
 
+## Unire due copie dello stesso film
+Pulsante «Unisci due film» nella barra (o File → Unisci due film…, ⇧⌘U): si scelgono due copie dello stesso film, per esempio una con l'immagine migliore e un'altra con l'audio italiano.
+- **Immagine**: l'app propone la copia migliore (prima la risoluzione, poi il bitrate tenendo conto del codec; penalità per Dolby Vision 5 e interlacciamento); si può cambiare.
+- **Audio e sottotitoli**: si scelgono le tracce di entrambe le copie (proposta: la traccia italiana migliore, a parità quella che sta già con l'immagine) e quella predefinita. La lingua si legge anche dal titolo della traccia («Ita Mp3»), utile negli AVI senza etichette.
+- **Allineamento** (per le tracce che vengono dall'altra copia): si legge l'audio intero delle due copie e se ne ricava l'inviluppo degli attacchi (crescita del volume ogni 10 ms), che non dipende dalla lingua perché musica ed effetti sono gli stessi. Se i frame rate sono diversi (25 ↔ 24 ↔ 23,976) l'audio viene rallentato o accelerato riportando il tono giusto (`asetrate` + `atempo` per il resto). Poi ogni 5 secondi, in tutto il film, si cerca lo scarto con la correlazione normalizzata; i tratti con lo stesso scarto formano le **parti**. Se lo scarto cresce in modo regolare si corregge la velocità; se salta, le copie hanno un **montaggio diverso**: il confine viene cercato al decimo di secondo e lì si saltano i secondi in più o si lascia silenzio dove all'altra copia manca la scena. Copie che non si somigliano (meno del 35% di tratti confermati o più di 10 minuti senza conferme) vengono rifiutate.
+- **Controllo a vista prima di creare il file**: anteprima di 15 secondi (dall'immagine scelta con l'audio predefinito già rimontato, con la stessa funzione usata per il film), barra delle parti con i punti di taglio cliccabili, menu «Vai a…», e pulsanti «Audio prima / dopo» per spostare l'audio di un fotogramma (40 ms) se il labiale non convince.
+- **Creazione**: mkvmerge (MKVToolNix). Con lo stesso frame rate e un unico scarto le tracce dell'altra copia sono copiate **senza perdite** (`--sync`); altrimenti l'audio viene rimontato tratto per tratto (letture fedeli ai tempi del file, dissolvenze di 8 ms alle giunzioni) e ricodificato in Dolby Digital, i sottotitoli di testo risincronizzati battuta per battuta (quelli a immagine solo senza ricodifica). Si chiama «Titolo (unito).mkv», accanto alla copia con l'immagine; i due file di partenza non vengono toccati.
+- **Verifica prima di salvare**: numero di tracce, durata, buchi nei flussi e soprattutto la sincronia, rimisurata sul file finito in ogni parte del film: oltre 45 ms (circa un fotogramma) il file non viene salvato.
+
+Da riga di comando: `dist/booth --merge A B [--video a|b] [--audio B0,A1] [--subs A0] [--default B0] [--output PATH] [--align-only]`; diagnosi: `--sync-point A tracciaA B tracciaB secondi`.
+Caso reale (Luis e gli alieni): MKV 720p a 24 fps senza italiano + AVI 576p a 25 fps con italiano MP3; trovati velocità 25→24, scarto iniziale −0,87 s e 4 scene in più nella copia italiana tra 1:13 e 1:16 (3,4 + 8 + 6,5 + 3,4 s); film unito in 38 s, ricontrollato contro l'originale in 744 tratti: scarto 0,3 ms.
+
 ## Uso
-    ./build.sh                       # dist/Movie Preflight.app (+ dist/moviepreflight per la riga di comando)
-    dist/moviepreflight --analyze film.mkv # rapporto testuale
-    python3 tests/test_moviepreflight.py   # 70 controlli su film sintetici con difetti noti
+    ./build.sh                       # dist/Booth.app (+ dist/booth per la riga di comando)
+    dist/booth --analyze film.mkv    # rapporto testuale
+    python3 tests/test_booth.py      # 83 controlli su film sintetici con difetti noti
 
 Gli strumenti vengono copiati dentro l'app da `tools/bundle_tools.py` (`BUNDLE_FFMPEG=0 ./build.sh` per saltare e usare quelli di /opt/homebrew/bin). Per distribuire l'app pubblicamente tieni conto della licenza di ffmpeg (la build di Homebrew include componenti GPL). Solo Apple Silicon (arm64), macOS 13+. Non modifica mai i file analizzati.
 
@@ -64,4 +78,4 @@ Gli strumenti vengono copiati dentro l'app da `tools/bundle_tools.py` (`BUNDLE_F
 Tarate su 9 film reali della libreria "Opere Prime" (nessun falso positivo su OCR/pubblicità/interlacciamento). Le soglie di dinamica audio (LRA, salti, sommesso/forte) sono volutamente larghe: i film reali normali hanno LRA 18-23 LU. Per i 5.1, la misura «musica sopra i dialoghi» (secondi con parlato in cui il fronte supera il centro di oltre 6 LU) vale 0-10% nei film normali della libreria, 15% in Ex Machina e 26% in Flow (colonna sonora invadente): nota sopra il 12%, attenzione sopra il 20%.
 
 ## Icona
-`icon/generate_icon.py` (generata con Codex a partire dall'icona di Dolly) disegna `icon/MoviePreflight-1024.png`; `icon/MoviePreflight.icns` si costruisce con `sips` + `iconutil` (vedi lo script di build).
+`python3 icon/generate_icon.py` disegna `icon/Booth-1024.png` e `icon/Booth.icns` (stessa famiglia di Dolly: la B di Booth con il fascio del proiettore che esce dalla pancia, e il punto rosso). Servono solo `sips` e `iconutil`.
