@@ -11,10 +11,11 @@ final class Job: ObservableObject, Identifiable {
     init(_ u: URL) { url = u }
 }
 final class Store: ObservableObject {
-    @Published var jobs: [Job] = []; @Published var selection: UUID?; @Published var modelProgress: Double?; @Published var comparePair: ComparePair?; @Published var compareBusy = false; @Published var mergeRequest: MergeRequest?; @Published var better: BetterVerdict?
+    @Published var jobs: [Job] = []; @Published var selection: UUID?; @Published var modelProgress: Double?; @Published var comparePair: ComparePair?; @Published var compareBusy = false; @Published var compareStatus = ""; @Published var compareProgress = 0.0; @Published var mergeRequest: MergeRequest?; @Published var better: BetterVerdict?
     private let q = DispatchQueue(label: "analisi")   // un film alla volta: le analisi usano già tutti i core
     static let exts: Set<String> = ["mp4", "mkv", "avi", "m4v", "mov"]
     func add(_ urls: [URL]) {
+        guard !compareBusy else { return }   // durante l'analisi del confronto l'app non fa altro
         let files = urls.flatMap { u -> [URL] in
             var d: ObjCBool = false; FileManager.default.fileExists(atPath: u.path, isDirectory: &d)
             if d.boolValue { return ((try? FileManager.default.contentsOfDirectory(at: u, includingPropertiesForKeys: nil)) ?? []).sorted { $0.path < $1.path } }; return [u] }
@@ -37,6 +38,7 @@ final class Store: ObservableObject {
     }
     /// Chiede il consenso e scarica il modello vocale (whisper, open source, 148 MB) per i controlli sulla lingua parlata e sulla sincronia dei sottotitoli.
     func offerSpeechModel() {
+        guard !compareBusy else { return }
         let a = NSAlert()
         if whisperModelPath() != nil { a.messageText = "Controlli sul parlato attivi"; a.informativeText = "Il modello vocale è già installato."; a.runModal(); return }
         a.messageText = "Controlli sul parlato"
@@ -97,6 +99,7 @@ final class Store: ObservableObject {
     }
     /// Confronta due film qualsiasi (per esempio un originale e la sua versione corretta, anche di versioni precedenti dell'app): li analizza se serve e apre il confronto.
     func compareFiles() {
+        guard !compareBusy else { return }
         let p = NSOpenPanel(); p.allowsMultipleSelection = true; p.canChooseDirectories = false; p.message = "Scegli le due copie da confrontare (⌘-clic per sceglierne due)"
         guard p.runModal() == .OK else { return }
         guard p.urls.count == 2 else { let a = NSAlert(); a.messageText = "Servono due film"; a.informativeText = "Seleziona esattamente due file (⌘-clic per sceglierne due)."; a.runModal(); return }
@@ -108,13 +111,13 @@ final class Store: ObservableObject {
         var pair = urls
         if pair[1].lastPathComponent.contains(".orig_backup") && !pair[0].lastPathComponent.contains(".orig_backup") { pair.reverse() }
         else if !pair[0].lastPathComponent.contains(".orig_backup") && date(pair[1]) < date(pair[0]) { pair.reverse() }
-        compareBusy = true
+        compareBusy = true; compareProgress = 0; compareStatus = "Preparo l'analisi…"
         q.async { [weak self] in
-            func rep(_ u: URL) -> Report {
+            func rep(_ u: URL, _ n: Int) -> Report {
                 var existing: Report?; DispatchQueue.main.sync { existing = self?.jobs.first { $0.url == u }?.report }
-                return existing ?? analyze(u)
+                return existing ?? analyze(u) { p, st in DispatchQueue.main.async { self?.compareProgress = (Double(n) + p) / 2; self?.compareStatus = "Film \(n + 1) di 2 · \(u.lastPathComponent)\n\(st)" } }
             }
-            let a = rep(pair[0]), b = rep(pair[1])
+            let a = rep(pair[0], 0), b = rep(pair[1], 1)
             let src = [loadMergeSource(pair[0], src: 0), loadMergeSource(pair[1], src: 1)]
             DispatchQueue.main.async {
                 self?.compareBusy = false
@@ -124,6 +127,7 @@ final class Store: ObservableObject {
     }
     /// Unisce due copie dello stesso film: l'immagine migliore da una, l'audio italiano dall'altra.
     func mergeFiles() {
+        guard !compareBusy else { return }
         let p = NSOpenPanel(); p.allowsMultipleSelection = true; p.canChooseDirectories = false; p.message = "Scegli le due copie dello stesso film (⌘-clic per sceglierne due)"
         guard p.runModal() == .OK else { return }
         guard p.urls.count == 2 else { let a = NSAlert(); a.messageText = "Servono due film"; a.informativeText = "Seleziona esattamente due file: per esempio quello con l'immagine migliore e quello con l'audio italiano."; a.runModal(); return }
@@ -131,6 +135,7 @@ final class Store: ObservableObject {
     }
     /// Consenso alle ricerche online (solo il titolo ricavato dal nome del file viene inviato a Wikidata e Wikipedia).
     func askOnline(force: Bool = false) {
+        guard !compareBusy || !force else { return }
         if ProcessInfo.processInfo.environment["BOOTH_NOPROMPT"] != nil { onlineLookups = ProcessInfo.processInfo.environment["BOOTH_ONLINE"] != nil; return }   // solo per le prove a vista
         if !force && UserDefaults.standard.object(forKey: "metaConsent") != nil { return }
         let a = NSAlert(); a.messageText = "Cercare i dati del film online?"
@@ -144,7 +149,7 @@ final class Store: ObservableObject {
         if let a = e["BOOTH_MERGE_A"], let b = e["BOOTH_MERGE_B"] { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.mergeRequest = MergeRequest(urls: [URL(fileURLWithPath: a), URL(fileURLWithPath: b)]) } }
         if let a = e["BOOTH_COMPARE_A"], let b = e["BOOTH_COMPARE_B"] { DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.compare([URL(fileURLWithPath: a), URL(fileURLWithPath: b)]) } }
     }
-    func open() { let p = NSOpenPanel(); p.allowsMultipleSelection = true; p.canChooseDirectories = true; p.message = "Scegli uno o più film"; if p.runModal() == .OK { add(p.urls) } }
+    func open() { guard !compareBusy else { return }; let p = NSOpenPanel(); p.allowsMultipleSelection = true; p.canChooseDirectories = true; p.message = "Scegli uno o più film"; if p.runModal() == .OK { add(p.urls) } }
 }
 
 extension Sev {
@@ -163,19 +168,36 @@ struct ContentView: View {
             }.sheet(item: $store.mergeRequest) { r in MergeView(urls: r.urls, store: store) } }
         }
         .frame(minWidth: 900, minHeight: 600)
+        .overlay { if store.compareBusy { CompareBusyOverlay(store: store) } }
         .sheet(item: $store.better) { v in BetterView(v: v, sideBySide: { store.better = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.comparePair = ComparePair(before: v.urls[0], beforeReport: v.reports[0], after: v.urls[1], afterReport: v.reports[1]) } },
                                                          merge: { store.better = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.mergeRequest = MergeRequest(urls: v.urls) } }) }
         .sheet(item: $store.comparePair) { pair in CompareView(pair: pair, swap: { store.comparePair = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.comparePair = pair.swapped } }) }
         .onDrop(of: [.fileURL], isTargeted: $hover) { ps in
+            guard !store.compareBusy else { return false }
             for p in ps { _ = p.loadObject(ofClass: URL.self) { u, _ in if let u = u { DispatchQueue.main.async { store.add([u]) } } } }; return true }
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accentColor, lineWidth: hover ? 3 : 0).padding(6).allowsHitTesting(false))
         .toolbar {
             if let p = store.modelProgress { ToolbarItem { HStack { Text("Scarico il modello vocale…").font(.caption).foregroundStyle(.secondary); ProgressView(value: p).frame(width: 110) } } }
-            if store.compareBusy { ToolbarItem { HStack { Text("Analizzo i due film…").font(.caption).foregroundStyle(.secondary); ProgressView().controlSize(.small) } } }
-            if !store.jobs.isEmpty {   // sulla schermata iniziale le tre scelte ci sono già
+            if !store.jobs.isEmpty && !store.compareBusy {   // sulla schermata iniziale le tre scelte ci sono già
                 ToolbarItem { Button { store.mergeFiles() } label: { Label("Unisci due copie", systemImage: "arrow.triangle.merge") }.help("Unisci due copie: immagine migliore da una, audio italiano dall'altra") }
                 ToolbarItem { Button { store.compareFiles() } label: { Label("Confronta due film", systemImage: "rectangle.split.2x1") }.help("Quale delle due copie è meglio e perché") }
                 ToolbarItem { Button { store.open() } label: { Label("Controlla un altro film", systemImage: "plus") }.help("Controlla un altro film") } }
+        }
+    }
+}
+/// Copre la finestra mentre si analizzano i due film da confrontare: niente altri clic finché non c'è il verdetto.
+struct CompareBusyOverlay: View {
+    @ObservedObject var store: Store
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea().contentShape(Rectangle()).onTapGesture {}
+            VStack(spacing: 14) {
+                Image(systemName: "rectangle.split.2x1").font(.system(size: 34)).foregroundStyle(Color.accentColor)
+                Text("Confronto i due film").font(.title2.weight(.semibold))
+                ProgressView(value: store.compareProgress).frame(width: 360)
+                Text(store.compareStatus).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).lineLimit(3).frame(width: 420)
+                Text("Attendi la fine dell'analisi: nel frattempo l'app non fa altro.").font(.caption).foregroundStyle(.tertiary)
+            }.padding(30).background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .windowBackgroundColor)).shadow(radius: 18))
         }
     }
 }
