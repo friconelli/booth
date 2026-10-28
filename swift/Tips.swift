@@ -162,14 +162,16 @@ struct DubCheck {
     var badDur: Double { late.filter { ($0.d ?? 0) > syncLateTol || ($0.d ?? 0) < -syncEarlyTol }.reduce(0) { $0 + $1.end - $1.start } }
     var worst: Double { late.compactMap(\.d).max { abs($0) < abs($1) } ?? 0 }
     var ok: Bool { badDur <= 60 }
+    var refText: String { refLang.isEmpty ? "l'audio originale" : "l'audio in \(langLabel(refLang))" }
     var summary: String {
         let parts = late.filter { $0.d != nil }, ds = parts.compactMap(\.d), lo = ds.min() ?? 0, hi = ds.max() ?? 0
-        if lo > -0.02 && hi < 0.02 { return "a tempo con l'immagine (entro 20 ms, misurato con l'audio in \(langLabel(refLang)) dell'altra copia)" }
-        return String(format: "da %+.0f a %+.0f ms rispetto all'immagine in %d tratti (+ = in ritardo; misurato con l'audio in %@ dell'altra copia)", lo * 1000, hi * 1000, parts.count, langLabel(refLang))
+        if lo > -0.02 && hi < 0.02 { return "a tempo con l'immagine (entro 20 ms, misurato con \(refText) dell'altra copia)" }
+        return String(format: "da %+.0f a %+.0f ms rispetto all'immagine in %d tratti (+ = in ritardo; misurato con %@ dell'altra copia)", lo * 1000, hi * 1000, parts.count, refText)
     }
 }
 
 func dubCheckBetween(_ s: [MergeSource], progress: @escaping (Double, String) -> Void = { _, _ in }) -> DubCheck? {
+    func why(_ m: String) -> DubCheck? { if ProcessInfo.processInfo.environment["BOOTH_DEBUG"] != nil { FileHandle.standardError.write(Data("doppiaggio: \(m)\n".utf8)) }; return nil }
     let has = s.map { $0.tracks.contains { $0.kind == "a" && $0.isItalian } }
     guard has[0] != has[1] else { return nil }
     let w = has[0] ? 0 : 1, o = 1 - w
@@ -177,7 +179,7 @@ func dubCheckBetween(_ s: [MergeSource], progress: @escaping (Double, String) ->
     guard !s[w].tracks.contains(where: { $0.kind == "a" && !$0.isItalian && !$0.effLang.isEmpty }) else { return nil }
     guard let dub = s[w].tracks.filter({ $0.kind == "a" && $0.isItalian }).max(by: { audioScore($0) < audioScore($1) }),
           let ref = s[o].tracks.filter({ $0.kind == "a" && !$0.isItalian }).max(by: { $0.channels < $1.channels }),
-          let vw = s[w].video, let vo = s[o].video, vw.duration > 300, vw.fps > 0, abs(vw.fps / vo.fps - 1) < 0.001 else { return nil }   // velocità diverse: ci pensa l'unione
+          let vw = s[w].video, let vo = s[o].video, vw.duration > 300, vw.fps > 0, abs(vw.fps / vo.fps - 1) < 0.001 else { return why("tracce o velocità \(s.map { $0.video?.fps ?? 0 })") }   // velocità diverse: ci pensa l'unione
     let dur = s[w].probe.duration
     var ed: [Float] = [], er: [Float] = []; let g = DispatchGroup()
     g.enter(); DispatchQueue.global().async { ed = fullEnvelope(s[w].url.path, track: dub.ord, duration: dur) { progress(0.4 * $0, "Leggo il doppiaggio…") }; g.leave() }
@@ -185,25 +187,27 @@ func dubCheckBetween(_ s: [MergeSource], progress: @escaping (Double, String) ->
     g.wait()
     progress(0.45, "Confronto il doppiaggio con l'audio originale dell'altra copia…")
     let r = segmentAlignment(ed, er, vDur: dur)   // l'originale dell'altra copia a t + d corrisponde al doppiaggio a t
-    guard r.why == nil, r.drift == nil, !r.segments.isEmpty else { return nil }
+    guard r.why == nil, r.drift == nil, !r.segments.isEmpty else { return why(r.why ?? "deriva \(r.drift ?? 0)") }
     func dAt(_ t: Double) -> Double? { r.segments.last { $0.start <= t }?.d }
     // scarto delle immagini dai tagli d'inquadratura, in cinque punti del film
     progress(0.6, "Guardo le immagini delle due copie…")
     var pics: [Double] = []; let lock = NSLock(), q = OperationQueue(); q.maxConcurrentOperationCount = 4
-    for f in [0.15, 0.32, 0.5, 0.68, 0.85] {
+    for f in stride(from: 0.1, through: 0.9, by: 0.1) {   // nelle scene lente i tagli sono pochi: più punti e finestre lunghe
         let t = f * dur; guard let d = dAt(t) else { continue }
         q.addOperation {
-            let bc = sceneCuts(s[w].url.path, from: t - 12, len: 24), ac = sceneCuts(s[o].url.path, from: t + d - 13, len: 26)
+            let bc = sceneCuts(s[w].url.path, from: t - 20, len: 40), ac = sceneCuts(s[o].url.path, from: t + d - 21, len: 42)
             if let p = cutOffset(bc, ac, near: [d - 0.25, d, d + 0.25]) { lock.lock(); pics.append(p); lock.unlock() }
         }
     }
     q.waitUntilAllOperationsAreFinished()
     pics.sort()
-    guard pics.count >= 3, pics.last! - pics.first! < 0.045 else { return nil }   // immagini non confrontabili o montaggi diversi: niente verdetto
+    guard pics.count >= 2, pics.last! - pics.first! < 0.045 else { return why("immagini \(pics) audio \(r.segments.map { ($0.start, $0.d ?? -99) })") }   // immagini non confrontabili o montaggi diversi: niente verdetto
     let pic = pics[pics.count / 2]
+    if ProcessInfo.processInfo.environment["BOOTH_DEBUG"] != nil { for sg in r.segments { FileHandle.standardError.write(Data(String(format: "  %@–%@ %@ %@\n", hms(sg.start), hms(sg.end), sg.d.map { String(format: "%+.0f ms", (pic - $0) * 1000) } ?? "—", sg.sure ? "" : "incerto").utf8)) } }
     progress(1, "Fatto")
     // l'originale è a tempo con la sua immagine: il doppiaggio a t corrisponde all'immagine dell'altra copia a t + d, cioè a questa a t + d − pic
-    let late = r.segments.map { sg -> MergeSegment in var x = sg; x.d = sg.d.map { pic - $0 }; return x }
+    // un doppiaggio non è spostato di secondi: parti così lontane sono misure sbagliate (passaggi ripetuti), non contano
+    let late = r.segments.map { sg -> MergeSegment in var x = sg; x.d = sg.d.map { pic - $0 }.flatMap { abs($0) < 1 ? $0 : nil }; return x }
     return DubCheck(ita: w, dub: dub.ord, ref: ref.ord, refLang: ref.effLang, picture: pic, late: late)
 }
 
@@ -221,7 +225,7 @@ func retimeDubFromOther(_ s: [MergeSource], _ c: DubCheck, output: URL? = nil, p
     progress(0.02, "Porto l'audio originale dell'altra copia sul tempo di questa…")
     let ref = work.appendingPathComponent("ref.mka")
     var a = ["-nostdin", "-y", "-v", "error"] + (c.picture > 0 ? ["-ss", String(format: "%.4f", c.picture)] : []) + ["-i", O.url.path, "-map", "0:a:\(c.ref)", "-vn", "-ac", "1", "-ar", "16000"]
-    a += ["-af", "aresample=async=1:first_pts=0" + (c.picture < 0 ? String(format: ",adelay=%.0f:all=1", -c.picture * 1000) : ""), "-t", String(format: "%.3f", W.probe.duration), "-c:a", "flac", "-metadata:s:a:0", "language=\(c.refLang)", ref.path]
+    a += ["-af", "aresample=async=1:first_pts=0" + (c.picture < 0 ? String(format: ",adelay=%.0f:all=1", -c.picture * 1000) : ""), "-t", String(format: "%.3f", W.probe.duration), "-c:a", "flac", ref.path]
     guard run(ff, a).status == 0 else { return FixResult(ok: false, message: "Non riesco a leggere l'audio originale dell'altra copia.") }
     // 2) copia di lavoro: questa copia più il riferimento come ultima traccia audio
     progress(0.06, "Preparo la copia di lavoro…")
@@ -231,8 +235,8 @@ func retimeDubFromOther(_ s: [MergeSource], _ c: DubCheck, output: URL? = nil, p
     var plan = FixPlan(); plan.retimeDub[c.dub] = refIdx
     let fixed = work.appendingPathComponent("corretto.mkv")
     var r = applyFix(tmp, plan, output: fixed) { v, st in progress(0.08 + 0.85 * v, st) }
-    let refName = "l'audio in \(langLabel(c.refLang)) di «\(O.url.lastPathComponent)»"
-    r.lines = r.lines.map { $0.replacingOccurrences(of: "sulla traccia \(refIdx + 1)", with: "sull'audio in \(langLabel(c.refLang)) dell'altra copia").replacingOccurrences(of: "rispetto alla traccia \(refIdx + 1)", with: "rispetto all'audio in \(langLabel(c.refLang)) dell'altra copia") }
+    let refName = "\(c.refText) di «\(O.url.lastPathComponent)»"
+    r.lines = r.lines.map { $0.replacingOccurrences(of: "sulla traccia \(refIdx + 1)", with: "sull'" + c.refText.dropFirst(2) + " dell'altra copia").replacingOccurrences(of: "rispetto alla traccia \(refIdx + 1)", with: "rispetto all'" + c.refText.dropFirst(2) + " dell'altra copia") }
     guard r.ok else { r.message = r.message.replacingOccurrences(of: "Il file non è stato toccato.", with: "La copia non è stata toccata."); return r }
     // 4) tolto il riferimento, resta la copia italiana con il doppiaggio a tempo
     progress(0.95, "Tolgo la traccia di riferimento…")
