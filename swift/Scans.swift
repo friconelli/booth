@@ -82,7 +82,7 @@ func scanVideoWindows(_ pr: Probe, _ path: String, _ c: Collector, progress: @es
     if let top = valid.max(by: { $0.value < $1.value }), w > 0 {
         let p = top.key.split(separator: ":").compactMap { Int($0) }
         if p[1] < h - 24 || p[0] < w - 24 { c.add(.info, "Video", "Bande nere incorporate nell'immagine", "L'immagine utile è \(p[0])×\(p[1]) (\(String(format: "%.2f", Double(p[0]) / Double(p[1])))∶1) dentro un quadro \(w)×\(h). Su uno schermo con proporzioni diverse restano bande nere intorno.") }
-        c.rows("Video", order: 1, [("Immagine utile", "\(p[0])×\(p[1])")])
+        c.rows("Video", order: 1, [("Immagine utile", "\(p[0])×\(p[1])")]); c.fact("v.cropW", Double(p[0])); c.fact("v.cropH", Double(p[1]))
     }
     // neri e fermi immagine
     for b in res[0].blacks where b.0 < 1 && b.1 > 8 { c.add(.warn, "Video", String(format: "Nero iniziale lungo (%.0f s)", b.1), "Lo schermo resta nero prima che parta il film.", time: 0) }

@@ -38,6 +38,7 @@ func whichIsBetter(_ s: [MergeSource], _ r: [Report]) -> BetterVerdict {
         if d > 40 { add(a.score, b.score, min(600, d * 0.4)) { w in
             let x = w == 0 ? a : b, y = w == 0 ? b : a
             var t = "Immagine migliore: \(x.w)×\(x.h) \(x.codec.uppercased())" + (x.bitrate > 0 ? " a \(fmtRate(x.bitrate))" : "") + " contro \(y.w)×\(y.h) \(y.codec.uppercased())" + (y.bitrate > 0 ? " a \(fmtRate(y.bitrate))" : "")
+            if x.w > Projector.w { t += " (sul proiettore, \(Projector.w)×\(Projector.h), il \(x.w >= 3000 ? "4K" : "file") si vede come un 1080p molto pulito, non di più)" }
             if y.dv5 { t += "; l'altra è Dolby Vision 5 (colori sbagliati senza un lettore apposito)" } else if y.interlaced { t += "; l'altra è interlacciata" }
             return t } }
     }

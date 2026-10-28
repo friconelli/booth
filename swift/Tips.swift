@@ -72,8 +72,18 @@ func projectionTips(_ r: Report, _ f: [String: Double]) -> [Tip] {
         if w < 1280 || (block ?? 0) > 4 || (blur ?? 0) > 14 { txt = "Scarsa per uno schermo grande: si vedranno immagine morbida e quadretti. Se puoi, cerca un'altra copia (Blu-ray 1080p, almeno 8 Mb/s) e confrontale con «Confronta due copie»; se l'altra copia ha l'audio sbagliato, «Unisci» prende l'immagine migliore e l'audio giusto." }
         else if low, let b = block, b <= 2.5, (blur ?? 0) <= 8 { txt = "Buona: il file è molto compresso (\(mb)) ma le misure sull'immagine sono nella norma. Al massimo qualche fascia di colore nelle scene buie, nel fumo e nella nebbia, visibile solo dalle prime file." }
         else if low { txt = "Discreta: il file è molto compresso (\(mb)), nelle scene buie e in movimento si vedrà un po' di grana a blocchi. Se ne trovi una copia più pesante è meglio." }
-        else { txt = w >= 3000 ? "Ottima: 4K ben codificato." : "Ottima per la sala: risoluzione e compressione nella norma." }
+        else if w > Double(Projector.w) { txt = "Ottima. Il file è \(w >= 3000 ? "4K" : "più grande di \(Projector.w) pixel"), ma il proiettore (\(Projector.label)) lo mostra a \(Projector.w): si vede come un 1080p molto pulito, non di più. Non serve cercare copie più pesanti." }
+        else { txt = "Ottima per il proiettore (\(Projector.label)): risoluzione e compressione nella norma." }
         t.append(Tip(icon: "photo", title: "Immagine sullo schermo", text: txt))
+        // proporzioni sul 16:10 del proiettore
+        let cw = f["v.cropW"] ?? w, ch = f["v.cropH"] ?? (f["v.h"] ?? 0)
+        if ch > 0 {
+            let ar = cw / ch, scr = Double(Projector.w) / Double(Projector.h), arTxt = String(format: "%.2f:1", ar).replacingOccurrences(of: ".", with: ",")
+            let s = ar > scr + 0.03 ? "Il film è in \(arTxt), più largo dello schermo 16:10 del proiettore: restano bande nere sopra e sotto, è normale. Sul proiettore lascia le proporzioni su «Normale» (non «Pieno», che deforma) e allarga lo zoom finché l'immagine riempie la larghezza dello schermo."
+                : ar < scr - 0.03 ? "Il film è in \(arTxt), più stretto dello schermo 16:10: restano bande nere ai lati, è normale. Proporzioni su «Normale», non «Pieno»."
+                : "Il film è in \(arTxt), quasi come lo schermo 16:10 del proiettore: riempie tutto."
+            t.append(Tip(icon: "rectangle.ratio.16.to.9", title: "Formato", text: s))
+        }
     }
     // 7) sottotitoli in base alla lingua dell'audio
     if r.audioTracks.indices.contains(main) {

@@ -58,7 +58,8 @@ func videoInfo(_ pr: Probe) -> VideoInfo? {
     i.bitrate = dbl(v["bit_rate"]) ?? dbl(tg["bps"]) ?? dbl(tg["bps-eng"]) ?? (pr.duration > 0 ? max(0, pr.size * 8 / pr.duration - audioBits) : 0)
     let eff: [String: Double] = ["av1": 2.0, "hevc": 1.6, "vp9": 1.5, "h264": 1.0, "vc1": 0.8, "mpeg4": 0.6, "mpeg2video": 0.5, "msmpeg4v3": 0.5]
     let effective = i.bitrate * (eff[i.codec] ?? 0.7)
-    var tier = Double(i.w >= 3000 ? 4 : i.w >= 1700 ? 3 : i.w >= 1100 ? 2 : 1)
+    // il proiettore mostra al massimo 1920×1200: un 4K vale come un 1080p (il bitrate più alto conta lo stesso, sotto, perché ridotto a 1920 è più pulito)
+    var tier = Double(i.w >= 1700 ? 3 : i.w >= 1100 ? 2 : 1)
     if tier > 1, i.fps > 0, effective / (Double(i.w * i.h) * i.fps) < 0.02 { tier -= 1 }   // risoluzione alta ma bitrate da fame: vale quanto quella sotto
     i.score = tier * 1000 + min(effective / 1e6, 80) * 5 + (i.bits > 8 ? 20 : 0) - (i.interlaced ? 400 : 0) - (i.dv5 ? 3000 : 0)
     return i
