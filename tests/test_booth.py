@@ -263,6 +263,12 @@ try:
     rc, o = merge(best, same, "--audio", "b0,a0", "--default", "b0", "--output", os.path.join(T, "copia.mkv")); cp = os.path.join(T, "copia.mkv")
     check(rc == 0 and "copiato senza perdite" in o and os.path.exists(cp) and [s["codec_name"] for s in tracks(cp, "audio")] == ["aac", "aac"], "stesso frame rate: traccia italiana copiata senza ricodifica, ordine delle tracce rispettato")
     if os.path.exists(cp): ds = [sync(cp, t) for t in (60, 300)]; check(all(abs(d) < 0.03 for d in ds), "copia senza perdite spostata di 1,5 s e a tempo (" + ", ".join(f"{d * 1000:+.0f} ms" for d in ds) + ")")
+    q0, q1 = os.path.join(T, "ant0.mp4"), os.path.join(T, "ant1.mp4")   # anteprima con la predefinita della copia con l'immagine: «Audio prima/dopo» deve comunque spostare l'audio che si sente
+    merge(best, same, "--audio", "a0,b0", "--default", "a0", "--preview", "200", "--output", q0); merge(best, same, "--audio", "a0,b0", "--default", "a0", "--preview", "200", "--nudge", "0.04", "--output", q1)
+    o = subprocess.run([BIN, "--sync-point", q0, "0", q1, "0", "7"], capture_output=True, text=True).stdout; m = re.search(r"a salti: d=([-+\d.]+)", o)
+    check(m is not None and abs(float(m.group(1)) + 0.04) < 0.005, f"anteprima: «Audio prima» di 1 fotogramma sposta l'audio che si sente anche se la predefinita è dell'altra copia ({float(m.group(1)) * 1000 if m else 0:+.0f} ms)")
+    rc, o = merge(best, same, "--audio", "b0", "--nudge-at", "200:0.08", "--output", os.path.join(T, "spostato.mkv")); sp = os.path.join(T, "spostato.mkv")
+    check(rc == 0 and "Correzione a mano" in o and "Correzione automatica" not in o and os.path.exists(sp) and abs(sync(sp, 200) + 0.08) < 0.01, "correzione a mano di 80 ms conservata nel film unito, la verifica non la annulla")
     extra = film("scena_in_piu.mkv", "640x360", "24000/1001", f"{ME}[m];{IT}[d];[m][d]amix=inputs=2:normalize=0,aformat=channel_layouts=stereo,asplit[x][y];[x]atrim=0:200,asetpts=PTS-STARTPTS[p];[y]atrim=200,asetpts=PTS-STARTPTS[q];anoisesrc=d=6:c=white:a=0.6:r=48000,{gate(93.11, 9)},aformat=channel_layouts=stereo[n];[p][n][q]concat=n=3:v=0:a=1", "ita", DM + 6)
     rc, o = merge(best, extra, "--audio", "b0", "--output", os.path.join(T, "piu.mkv")); pu = os.path.join(T, "piu.mkv")
     check(rc == 0 and re.search(r"a 3:2\d.* 6\.0 s in più", o) is not None, "scena di 6 s in più nella copia italiana: trovata e saltata")

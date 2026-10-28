@@ -73,7 +73,7 @@ Caso reale (Luis e gli alieni): MKV 720p a 24 fps senza italiano + AVI 576p a 25
 ## Uso
     ./build.sh                       # dist/Booth.app (+ dist/booth per la riga di comando)
     dist/booth --analyze film.mkv    # rapporto testuale
-    python3 tests/test_booth.py      # 86 controlli su film sintetici con difetti noti
+    python3 tests/test_booth.py      # 88 controlli su film sintetici con difetti noti
 
 Gli strumenti vengono copiati dentro l'app da `tools/bundle_tools.py` (`BUNDLE_FFMPEG=0 ./build.sh` per saltare e usare quelli di /opt/homebrew/bin). Per distribuire l'app pubblicamente tieni conto della licenza di ffmpeg (la build di Homebrew include componenti GPL). Solo Apple Silicon (arm64), macOS 13+. Non modifica mai i file analizzati.
 

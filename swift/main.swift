@@ -57,6 +57,11 @@ if let i = CommandLine.arguments.firstIndex(of: "--merge"), i + 2 < CommandLine.
         }
     }
     if CommandLine.arguments.contains("--align-only") { exit(0) }
+    if let pt = arg("--preview").first.flatMap({ Double($0) }), let out = arg("--output").first {   // prova dell'anteprima: --preview SECONDI [--nudge SECONDI] --output FILE.mp4
+        if let n = arg("--nudge").first.flatMap({ Double($0) }), var x = al { x.nudges[x.part(at: pt)] = n; al = x }
+        let e = renderPreview(s, plan, alignment: al, at: pt, out: URL(fileURLWithPath: out)); print(e ?? "ANTEPRIMA: \(out)"); exit(e == nil ? 0 : 1)
+    }
+    for v in arg("--nudge-at") { let x = v.split(separator: ":").compactMap { Double($0) }; if x.count == 2, var y = al { y.nudges[y.part(at: x[0])] = x[1]; al = y } }   // prova: correzione a mano SECONDI:SPOSTAMENTO
     let r = runMerge(s, plan, alignment: al, progress: prog)
     FileHandle.standardError.write(Data("\n".utf8)); print((r.ok ? "OK: " : "ERRORE: ") + r.message); r.lines.forEach { print("  " + $0) }; exit(r.ok ? 0 : 1)
 }

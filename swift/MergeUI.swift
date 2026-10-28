@@ -251,7 +251,7 @@ struct MergeView: View {
                     Button("Audio dopo (+1 fotogramma)") { m.nudge(-0.040) }
                     if abs(m.currentNudge) > 0.0005 { let n = m.currentNudge; Text(String(format: "correzione %@%.0f ms", n > 0 ? "−" : "+", abs(n) * 1000)).font(.callout.monospacedDigit()).foregroundStyle(.orange); Button("Azzera") { m.nudge(-n) } }
                 }
-                Text("L'anteprima parte 5 secondi prima del punto scelto e dura 15 secondi, con l'audio già allineato come nel film finale." + ((m.alignment?.segments.count ?? 1) > 1 ? " La correzione vale solo per la parte del film che stai guardando." : "")).font(.caption).foregroundStyle(.secondary)
+                Text("L'anteprima parte 5 secondi prima del punto scelto e dura 15 secondi, con l'audio già allineato come nel film finale" + (previewTrack(m.srcs, m.plan, aligned: true).map { ": si sente \(langLabel($0.effLang)) \($0.codecLabel) dalla copia \($0.src == 0 ? "A" : "B"), la traccia che i pulsanti spostano." } ?? ".") + ((m.alignment?.segments.count ?? 1) > 1 ? " La correzione vale solo per la parte del film che stai guardando." : "")).font(.caption).foregroundStyle(.secondary)
             }
         }
     }

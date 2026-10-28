@@ -357,11 +357,19 @@ func pieceGraph(_ O: MergeSource, _ t: MergeTrack, k: Double, segs: [MergeSegmen
     if n == 0 { silence(max(0.1, to - from)) }
     return (inputs, chains.joined(separator: ";") + ";" + (0..<n).map { "[p\($0)]" }.joined() + "concat=n=\(n):v=0:a=1[\(outLabel)]")
 }
+/// La traccia che si ascolta nell'anteprima: con l'allineamento, sempre una dell'altra copia (la predefinita se è sua, altrimenti la prima scelta), perché è quella
+/// che «Audio prima/dopo» sposta; se fosse quella della copia con l'immagine i pulsanti non cambierebbero niente di udibile.
+func previewTrack(_ s: [MergeSource], _ plan: MergePlan, aligned: Bool) -> MergeTrack? {
+    let all = s[0].tracks + s[1].tracks, chosen = plan.audio.compactMap { id in all.first { $0.id == id } }
+    let def = (plan.defaultAudio ?? plan.audio.first).flatMap { id in all.first { $0.id == id } }
+    if aligned, let o = (def.map { [$0] } ?? []).first(where: { $0.src != plan.video }) ?? chosen.first(where: { $0.src != plan.video }) { return o }
+    return def ?? chosen.first
+}
 /// Anteprima per il controllo a vista: `len` secondi dell'immagine scelta dal punto `at`, con l'audio predefinito già allineato come nel film finale.
 func renderPreview(_ s: [MergeSource], _ plan: MergePlan, alignment: Alignment?, at: Double, len: Double = 15, out: URL) -> String? {
     guard let ff = tool("ffmpeg") else { return "ffmpeg non trovato." }
-    let V = s[plan.video], O = s[1 - plan.video], all = s[0].tracks + s[1].tracks
-    guard let aid = plan.defaultAudio ?? plan.audio.first, let at0 = all.first(where: { $0.id == aid }) else { return "Scegli una traccia audio." }
+    let V = s[plan.video], O = s[1 - plan.video]
+    guard let at0 = previewTrack(s, plan, aligned: alignment != nil) else { return "Scegli una traccia audio." }
     let t0 = max(0, min(at, V.probe.duration - len)); try? FileManager.default.removeItem(at: out)
     var args = ["-nostdin", "-y", "-v", "error", "-ss", String(format: "%.3f", t0), "-t", String(format: "%.3f", len), "-i", V.url.path]
     if at0.src == plan.video { args += ["-map", "0:v:0", "-map", "0:a:\(at0.ord)"] }
