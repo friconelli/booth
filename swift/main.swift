@@ -25,6 +25,15 @@ if let i = CommandLine.arguments.firstIndex(of: "--sync-point"), i + 5 < Command
     if let p = lagSearch(ea, eb, t: t, len: 30, guess: 0, search: 5) { print(String(format: "intera traccia: d=%+.4f corr=%.2f  (inviluppi %.1f s e %.1f s, durate %.1f e %.1f)", p.d, p.corr, Double(ea.count) / envRate, Double(eb.count) / envRate, da, db)) }
     exit(0)
 }
+if let i = CommandLine.arguments.firstIndex(of: "--better"), i + 2 < CommandLine.arguments.count {   // quale delle due copie è meglio: --better A B
+    let u = [CommandLine.arguments[i + 1], CommandLine.arguments[i + 2]].map { URL(fileURLWithPath: $0) }
+    guard let a = loadMergeSource(u[0], src: 0), let b = loadMergeSource(u[1], src: 1) else { print("ERRORE: file illeggibile"); exit(1) }
+    let v = whichIsBetter([a, b], u.map { analyze($0) })
+    print(v.winner.map { "MEGLIO: \($0 == 0 ? "A" : "B") \(u[$0].lastPathComponent)" } ?? "PARI")
+    if v.mergeHint { print("CONVIENE UNIRLE") }
+    for r in v.reasons { print("\(r.winner == 0 ? "A" : "B") +\(Int(r.weight)): \(r.text)") }
+    exit(0)
+}
 // Unione di due copie: --merge A B [--video a|b] [--audio B0,A1] [--subs A0] [--default B0] [--output PATH] [--align-only]   (senza scelte: quella proposta dall'app)
 if let i = CommandLine.arguments.firstIndex(of: "--merge"), i + 2 < CommandLine.arguments.count {
     let urls = [CommandLine.arguments[i + 1], CommandLine.arguments[i + 2]].map { URL(fileURLWithPath: $0) }
@@ -41,7 +50,8 @@ if let i = CommandLine.arguments.firstIndex(of: "--merge"), i + 2 < CommandLine.
     if let ot = other.first(where: { $0.kind == "a" }) ?? s[1 - plan.video].tracks.first(where: { $0.kind == "a" }), !other.isEmpty || CommandLine.arguments.contains("--align-only") {
         switch alignAudio(v: s[plan.video], o: s[1 - plan.video], oTrack: ot, progress: prog) {
         case .ok(let x): al = x; FileHandle.standardError.write(Data("\n".utf8)); print(String(format: "ALLINEATO: k=%.6f d=%+.4f", x.k, x.d)); x.lines.forEach { print("  " + $0) }
-            x.segments.forEach { print(String(format: "  parte %@ → %@  %@", hms($0.start), hms($0.end), $0.d.map { String(format: "d=%+.4f", $0) } ?? "silenzio")) }
+            x.segments.forEach { print(String(format: "  parte %@ → %@  %@%@", hms($0.start), hms($0.end), $0.d.map { String(format: "d=%+.4f", $0) } ?? "silenzio", $0.sure ? "" : "  (confine incerto)")) }
+            x.risks.forEach { print("  rischio \(hms($0.t)): \($0.why)") }
             x.points.forEach { print(String(format: "  punto %@ d=%+.4f corr=%.2f picco×%.1f%@", hms($0.t), $0.d, $0.corr, $0.ratio, $0.good ? "" : " (scartato)")) }
         case .fail(let why, let pts): FileHandle.standardError.write(Data("\n".utf8)); print("NON ALLINEATO: \(why)"); pts.forEach { print(String(format: "  punto %@ d=%+.4f corr=%.2f picco×%.1f", hms($0.t), $0.d, $0.corr, $0.ratio)) }; exit(2)
         }

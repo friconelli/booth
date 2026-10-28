@@ -11,7 +11,7 @@ final class Job: ObservableObject, Identifiable {
     init(_ u: URL) { url = u }
 }
 final class Store: ObservableObject {
-    @Published var jobs: [Job] = []; @Published var selection: UUID?; @Published var modelProgress: Double?; @Published var comparePair: ComparePair?; @Published var compareBusy = false; @Published var mergeRequest: MergeRequest?
+    @Published var jobs: [Job] = []; @Published var selection: UUID?; @Published var modelProgress: Double?; @Published var comparePair: ComparePair?; @Published var compareBusy = false; @Published var mergeRequest: MergeRequest?; @Published var better: BetterVerdict?
     private let q = DispatchQueue(label: "analisi")   // un film alla volta: le analisi usano già tutti i core
     static let exts: Set<String> = ["mp4", "mkv", "avi", "m4v", "mov"]
     func add(_ urls: [URL]) {
@@ -97,7 +97,7 @@ final class Store: ObservableObject {
     }
     /// Confronta due film qualsiasi (per esempio un originale e la sua versione corretta, anche di versioni precedenti dell'app): li analizza se serve e apre il confronto.
     func compareFiles() {
-        let p = NSOpenPanel(); p.allowsMultipleSelection = true; p.canChooseDirectories = false; p.message = "Scegli i due film da confrontare (l'originale e quello corretto)"
+        let p = NSOpenPanel(); p.allowsMultipleSelection = true; p.canChooseDirectories = false; p.message = "Scegli le due copie da confrontare (⌘-clic per sceglierne due)"
         guard p.runModal() == .OK else { return }
         guard p.urls.count == 2 else { let a = NSAlert(); a.messageText = "Servono due film"; a.informativeText = "Seleziona esattamente due file (⌘-clic per sceglierne due)."; a.runModal(); return }
         compare(p.urls)
@@ -115,7 +115,11 @@ final class Store: ObservableObject {
                 return existing ?? analyze(u)
             }
             let a = rep(pair[0]), b = rep(pair[1])
-            DispatchQueue.main.async { self?.compareBusy = false; self?.comparePair = ComparePair(before: pair[0], beforeReport: a, after: pair[1], afterReport: b) }
+            let src = [loadMergeSource(pair[0], src: 0), loadMergeSource(pair[1], src: 1)]
+            DispatchQueue.main.async {
+                self?.compareBusy = false
+                if let x = src[0], let y = src[1] { self?.better = whichIsBetter([x, y], [a, b]) } else { self?.comparePair = ComparePair(before: pair[0], beforeReport: a, after: pair[1], afterReport: b) }
+            }
         }
     }
     /// Unisce due copie dello stesso film: l'immagine migliore da una, l'audio italiano dall'altra.
@@ -159,6 +163,8 @@ struct ContentView: View {
             }.sheet(item: $store.mergeRequest) { r in MergeView(urls: r.urls, store: store) } }
         }
         .frame(minWidth: 900, minHeight: 600)
+        .sheet(item: $store.better) { v in BetterView(v: v, sideBySide: { store.better = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.comparePair = ComparePair(before: v.urls[0], beforeReport: v.reports[0], after: v.urls[1], afterReport: v.reports[1]) } },
+                                                         merge: { store.better = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.mergeRequest = MergeRequest(urls: v.urls) } }) }
         .sheet(item: $store.comparePair) { pair in CompareView(pair: pair, swap: { store.comparePair = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.comparePair = pair.swapped } }) }
         .onDrop(of: [.fileURL], isTargeted: $hover) { ps in
             for p in ps { _ = p.loadObject(ofClass: URL.self) { u, _ in if let u = u { DispatchQueue.main.async { store.add([u]) } } } }; return true }
@@ -168,7 +174,7 @@ struct ContentView: View {
             if store.compareBusy { ToolbarItem { HStack { Text("Analizzo i due film…").font(.caption).foregroundStyle(.secondary); ProgressView().controlSize(.small) } } }
             if !store.jobs.isEmpty {   // sulla schermata iniziale le tre scelte ci sono già
                 ToolbarItem { Button { store.mergeFiles() } label: { Label("Unisci due copie", systemImage: "arrow.triangle.merge") }.help("Unisci due copie: immagine migliore da una, audio italiano dall'altra") }
-                ToolbarItem { Button { store.compareFiles() } label: { Label("Confronta due film", systemImage: "rectangle.split.2x1") }.help("Due versioni una accanto all'altra") }
+                ToolbarItem { Button { store.compareFiles() } label: { Label("Confronta due film", systemImage: "rectangle.split.2x1") }.help("Quale delle due copie è meglio e perché") }
                 ToolbarItem { Button { store.open() } label: { Label("Controlla un altro film", systemImage: "plus") }.help("Controlla un altro film") } }
         }
     }
@@ -185,7 +191,7 @@ struct DropHint: View {
             HStack(alignment: .top, spacing: 16) {
                 Choice(icon: "checkmark.seal", title: "Controlla un film", text: "Immagine, audio e sottotitoli: lingue, volume, sincronia, crediti del torrent e difetti tecnici. Poi lo corregge in una copia nuova.", button: "Scegli un film…", primary: true) { store.open() }
                 Choice(icon: "arrow.triangle.merge", title: "Unisci due copie", text: "Prende l'immagine migliore da una copia e l'audio italiano dall'altra, li allinea e te li fa controllare prima di salvare.", button: "Scegli le due copie…") { store.mergeFiles() }
-                Choice(icon: "rectangle.split.2x1", title: "Confronta due film", text: "Due versioni dello stesso film, per esempio l'originale e la copia corretta: cosa è stato risolto, cosa resta e le immagini fianco a fianco.", button: "Scegli i due film…") { store.compareFiles() }
+                Choice(icon: "rectangle.split.2x1", title: "Confronta due film", text: "Due copie dello stesso film: ti dice quale è meglio per la sala e perché (immagine, audio italiano, sottotitoli, problemi).", button: "Scegli i due film…") { store.compareFiles() }
             }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: 820)
             Text("Il file originale non viene mai modificato: ogni correzione o unione crea una copia nuova accanto.").font(.caption).foregroundStyle(.tertiary)
         }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)

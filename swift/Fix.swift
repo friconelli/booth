@@ -73,7 +73,7 @@ extension FixPlan {
         return l
     }
 }
-struct FixResult { var ok: Bool; var message: String; var lines: [String] = []; var backup: URL?; var newURL: URL? }
+struct FixResult { var ok: Bool; var message: String; var lines: [String] = []; var backup: URL?; var newURL: URL?; var badTime: Double? = nil }   // badTime: il momento da guardare se la verifica non passa
 
 /// Filtro validato per "musica troppo forte, dialoghi troppo bassi" (vedi la libreria film): livella la dinamica e limita i picchi.
 /// Livello obiettivo della regolazione a guadagno fisso (cinema/streaming: -24 LUFS integrati).

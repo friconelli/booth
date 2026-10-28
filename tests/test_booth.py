@@ -161,10 +161,15 @@ try:
                    "The car left yesterday morning and it still has not come back home.", "Tell me the truth, why did you not call me when you arrived?", "The weather has changed a lot in recent years, and not only around here."]
         slots = [6.2 + ((i * 7919) % 13) * 0.35 for i in range(N)]   # tempi irregolari come nel parlato vero (un ritmo fisso renderebbe ambiguo lo spostamento)
         starts = [sum(slots[:i]) for i in range(N)]
+        def say(voice, out, text):   # «say» a volte si pianta per ore: tempo massimo e un nuovo tentativo
+            for _ in range(3):
+                try: subprocess.run(["say", "-v", voice, "-o", out, text], check=True, timeout=60); return
+                except subprocess.TimeoutExpired: pass
+            raise RuntimeError("say non risponde")
         def speech(voice, sents, name):
             durs = []
             for i, t in enumerate(sents):
-                a = os.path.join(T, f"{name}{i}.aiff"); subprocess.run(["say", "-v", voice, "-o", a, t], check=True)
+                a = os.path.join(T, f"{name}{i}.aiff"); say(voice, a, t)
                 durs.append(float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", a], capture_output=True, text=True).stdout))
             lst = os.path.join(T, name + ".txt"); open(lst, "w").write("")
             parts = []
@@ -216,6 +221,17 @@ try:
     check(rc != 0 and "annullata" in o and os.path.getsize(fb) == before_size and not os.path.exists(fb.replace(".mkv", " (corretto).mkv")), "correzione che peggiora i dialoghi: annullata, file intatto, nessuna copia creata")
     pl = os.path.join(T, "pulito.mkv"); rc, o = fix(pl, "--level", "0"); m = re.search(r"dopo:\s+(-?[\d.]+) LUFS", o)
     check(rc == 0 and m is not None and abs(float(m.group(1)) + 24) < 2.5 and "guadagno fisso" in o, f"volume portato a -24 LUFS con guadagno fisso ({m.group(1) if m else '?'} LUFS)")
+    print("== quale copia è meglio")
+    def better(a, b): return subprocess.run([BIN, "--better", a, b], capture_output=True, text=True).stdout
+    hd_en, sd_it, sd_it2, hd_it = (os.path.join(T, n) for n in ("hd_en.mkv", "sd_it.mkv", "sd_it2.mkv", "hd_it.mkv"))
+    ff("-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=24000/1001:d=40", "-f", "lavfi", "-i", "sine=f=440:d=40", "-c:v", "libx264", "-b:v", "6M", "-c:a", "aac", "-ac", "2", "-metadata:s:a:0", "language=eng", hd_en)
+    ff("-f", "lavfi", "-i", "testsrc2=s=720x400:r=25:d=38.4", "-f", "lavfi", "-i", "sine=f=440:d=38.4", "-c:v", "libx264", "-b:v", "1M", "-c:a", "ac3", "-ac", "6", "-metadata:s:a:0", "language=ita", sd_it)
+    ff("-f", "lavfi", "-i", "testsrc2=s=720x400:r=25:d=38.4", "-f", "lavfi", "-i", "sine=f=440:d=38.4", "-c:v", "libx264", "-b:v", "1M", "-c:a", "aac", "-ac", "2", "-metadata:s:a:0", "language=ita", sd_it2)
+    ff("-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=24000/1001:d=40", "-f", "lavfi", "-i", "sine=f=440:d=40", "-c:v", "libx264", "-b:v", "6M", "-c:a", "ac3", "-ac", "6", "-metadata:s:a:0", "language=ita", hd_it)
+    o1, o2 = better(hd_en, sd_it), better(sd_it, hd_en)
+    check(o1.startswith("MEGLIO: B") and o2.startswith("MEGLIO: A") and "audio italiano" in o1 and "CONVIENE UNIRLE" in o1, "audio italiano batte l'immagine migliore, in qualunque ordine, e propone di unirle")
+    o = better(sd_it2, hd_it); check(o.startswith("MEGLIO: B") and "1920×1080" in o and "5.1" in o and "CONVIENE" not in o and "minuti" not in o, "stessa lingua: vince l'immagine e l'audio 5.1, durata PAL non scambiata per scene mancanti")
+    check(better(hd_it, hd_it).startswith("PARI"), "due copie uguali: pari")
     print("== unione di due copie")
     DM = 400
     def gate(seed, rate=7, dens=0.35): return f"volume='if(lt(abs(mod(sin(floor(t*{rate})*{seed})*43758.5453,1)),{dens}),1,0.03)':eval=frame"

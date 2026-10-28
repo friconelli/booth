@@ -56,7 +56,7 @@ final class MergeModel: ObservableObject {
         result = nil
         guard needsAlign, let ot = alignTrack else { alignment = nil; alignFail = nil; alignKey = ""; return }
         let key = "\(video)|\(ot.id)"; guard key != alignKey else { return }
-        alignKey = key; alignment = nil; alignFail = nil; aligning = true; progress = 0; stage = "Allineamento…"
+        alignKey = key; alignment = nil; alignFail = nil; extraRisks = []; seen = []; aligning = true; progress = 0; stage = "Allineamento…"
         let v = srcs[video], o = srcs[1 - video]
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let r = alignAudio(v: v, o: o, oTrack: ot) { p, s in DispatchQueue.main.async { self?.progress = p; self?.stage = s } }
@@ -68,7 +68,15 @@ final class MergeModel: ObservableObject {
         }
     }
     /// Sposta l'audio dell'altra copia di un fotogramma (circa 40 ms) e rifà l'anteprima.
-    func nudge(_ delta: Double) { guard alignment != nil else { return }; alignment!.nudge += delta; result = nil; preview() }
+    /// Vale per la parte del film che si sta guardando (con un'unica parte, per tutto il film).
+    func nudge(_ delta: Double) { guard let a = alignment else { return }; let i = a.part(at: previewTime); alignment!.nudges[i, default: 0] += delta; result = nil; preview() }
+    var currentNudge: Double { alignment?.nudge(at: previewTime) ?? 0 }
+    /// I momenti a rischio già guardati in anteprima.
+    @Published var seen: Set<Double> = []
+    func look(_ r: RiskMoment) { seen.insert(r.t); preview(at: r.t) }
+    /// Momenti aggiunti dalla verifica del film unito, se ha trovato uno sfasamento che non sa correggere da sola.
+    @Published var extraRisks: [RiskMoment] = []
+    var risks: [RiskMoment] { ((alignment?.risks ?? []) + extraRisks).sorted { $0.t < $1.t } }
     var cutPoints: [(String, Double)] {
         guard let a = alignment else { return [] }
         return a.segments.enumerated().compactMap { i, s in i == 0 ? nil : (s.d == nil ? "Silenzio" : "Taglio", s.start) }
@@ -94,7 +102,12 @@ final class MergeModel: ObservableObject {
         let s = srcs, p = plan, a = needsAlign ? alignment : nil
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let r = runMerge(s, p, alignment: a) { v, st in DispatchQueue.main.async { self?.progress = v; self?.stage = st } }
-            DispatchQueue.main.async { self?.creating = false; self?.result = r; if r.ok, let u = r.newURL { done(u) } }
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.creating = false; self.result = r
+                if let bt = r.badTime { let m = RiskMoment(t: bt, why: "La verifica del film unito ha trovato uno sfasamento qui"); if !self.extraRisks.contains(m) { self.extraRisks.append(m) }; self.preview(at: bt) }
+                if r.ok, let u = r.newURL { done(u) }
+            }
         }
     }
 }
@@ -185,8 +198,31 @@ struct MergeView: View {
                 Label(a.isConstant ? "Audio allineato. Controlla l'anteprima: le labbra devono andare a tempo con le voci." : "Audio allineato in \(a.effSegments.filter { $0.d != nil }.count) parti. Controlla l'anteprima soprattutto nei punti rossi, dove le due copie hanno un montaggio diverso.", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout.weight(.medium)).fixedSize(horizontal: false, vertical: true)
                 DisclosureGroup("Dettagli") { VStack(alignment: .leading, spacing: 3) { ForEach(Array(a.lines.enumerated()), id: \.offset) { Text($0.element).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) } }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4) }.font(.caption)
                 PartsBar(alignment: a, duration: m.srcs[m.video].probe.duration, current: m.previewTime) { m.preview(at: $0) }
+                riskList(a)
             }
             if !m.needsAlign || m.alignment != nil { previewBox }
+        }
+    }
+    /// I momenti in cui l'allineamento automatico non è sicuro: un clic e l'anteprima parte da lì.
+    @ViewBuilder func riskList(_ a: Alignment) -> some View {
+        let rs = m.risks
+        if rs.isEmpty {
+            Label("Nessun momento a rischio: basta un'occhiata a un dialogo qualsiasi.", systemImage: "checkmark.seal").font(.callout).foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Momenti da controllare (\(rs.filter { m.seen.contains($0.t) }.count) di \(rs.count) guardati)").font(.callout.weight(.semibold))
+                Text("Qui l'app non è sicura dell'allineamento: guarda ciascun momento e, se il labiale non torna, usa «Audio prima/dopo» sotto l'anteprima.").font(.caption).foregroundStyle(.secondary)
+                ScrollView { VStack(alignment: .leading, spacing: 2) { ForEach(rs, id: \.self) { r in
+                    let done = m.seen.contains(r.t), here = abs(m.previewTime - r.t) < 0.5
+                    HStack(spacing: 8) {
+                        Image(systemName: done ? "checkmark.circle.fill" : "exclamationmark.triangle.fill").foregroundStyle(done ? Color.green : Color.orange).frame(width: 18)
+                        Text(hms(r.t)).font(.callout.monospacedDigit()).frame(width: 64, alignment: .leading)
+                        Text(r.why).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                        Spacer(minLength: 6)
+                        Button(here ? "In anteprima" : "Guarda") { m.look(r) }.controlSize(.small).disabled(here && m.previewBusy)
+                    }.padding(.vertical, 2).padding(.horizontal, 6).background(RoundedRectangle(cornerRadius: 5).fill(here ? Color.accentColor.opacity(0.12) : .clear))
+                } }.frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: min(CGFloat(rs.count) * 28 + 4, 170))
+            }.frame(maxWidth: 640, alignment: .leading)
         }
     }
     var previewBox: some View {
@@ -210,12 +246,12 @@ struct MergeView: View {
             }
             if m.alignment != nil && m.needsAlign {
                 HStack(spacing: 10) {
-                    Text("Labiale fuori sincrono?").font(.callout)
+                    Text((m.alignment?.segments.count ?? 1) > 1 ? "Labiale fuori sincrono in questa parte?" : "Labiale fuori sincrono?").font(.callout)
                     Button("Audio prima (−1 fotogramma)") { m.nudge(0.040) }
                     Button("Audio dopo (+1 fotogramma)") { m.nudge(-0.040) }
-                    if let a = m.alignment, abs(a.nudge) > 0.0005 { Text(String(format: "correzione %@%.0f ms", a.nudge > 0 ? "−" : "+", abs(a.nudge) * 1000)).font(.callout.monospacedDigit()).foregroundStyle(.orange); Button("Azzera") { m.nudge(-a.nudge) } }
+                    if abs(m.currentNudge) > 0.0005 { let n = m.currentNudge; Text(String(format: "correzione %@%.0f ms", n > 0 ? "−" : "+", abs(n) * 1000)).font(.callout.monospacedDigit()).foregroundStyle(.orange); Button("Azzera") { m.nudge(-n) } }
                 }
-                Text("L'anteprima parte 5 secondi prima del punto scelto e dura 15 secondi, con l'audio predefinito già allineato come nel film finale. Guarda un primo piano con dialoghi e, se ci sono, i punti di taglio.").font(.caption).foregroundStyle(.secondary)
+                Text("L'anteprima parte 5 secondi prima del punto scelto e dura 15 secondi, con l'audio già allineato come nel film finale." + ((m.alignment?.segments.count ?? 1) > 1 ? " La correzione vale solo per la parte del film che stai guardando." : "")).font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -226,7 +262,7 @@ struct MergeView: View {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: r.ok ? "checkmark.circle.fill" : "xmark.octagon.fill").foregroundStyle(r.ok ? Color.green : Color.red).font(.system(size: 17))
                     VStack(alignment: .leading, spacing: 3) { Text(r.message).font(.callout.weight(.semibold)).textSelection(.enabled)
-                        ForEach(Array(r.lines.filter { $0.hasPrefix("Sincronia") || $0.hasPrefix("Audio") }.enumerated()), id: \.offset) { Text($0.element).font(.caption).foregroundStyle(.secondary) }
+                        ForEach(Array(r.lines.filter { $0.hasPrefix("Sincronia") || $0.hasPrefix("Audio") || $0.hasPrefix("Correzione") }.enumerated()), id: \.offset) { Text($0.element).font(.caption).foregroundStyle(.secondary) }
                         if r.ok, let u = r.newURL { HStack { Button("Mostra nel Finder") { NSWorkspace.shared.activateFileViewerSelecting([u]) }.controlSize(.small)
                             Button("Controlla con Booth") { m.player?.pause(); store.add([u]); dismiss() }.controlSize(.small).buttonStyle(.borderedProminent) } } }
                 }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(RoundedRectangle(cornerRadius: 8).fill((r.ok ? Color.green : Color.red).opacity(0.09)))
@@ -259,11 +295,12 @@ struct PartsBar: View {
                         Rectangle().fill(s.d == nil ? Color.secondary.opacity(0.35) : Color.accentColor.opacity(0.55)).frame(width: max(1, x(s.end) - x(s.start))).offset(x: x(s.start))
                     }
                     ForEach(Array(alignment.segments.enumerated().dropFirst()), id: \.offset) { _, s in Rectangle().fill(Color.red).frame(width: 2).offset(x: x(s.start) - 1) }
+                    ForEach(alignment.risks, id: \.self) { r in Rectangle().fill(Color.orange).frame(width: 3).offset(x: x(r.t) - 1.5) }
                     Rectangle().fill(Color.primary).frame(width: 2, height: 22).offset(x: x(current) - 1)
                 }.frame(width: w, height: 14, alignment: .leading).cornerRadius(3).contentShape(Rectangle())   // larghezza esplicita: con gli offset lo ZStack prenderebbe solo quella della prima parte
                 .gesture(DragGesture(minimumDistance: 0).onEnded { v in go(max(0, min(duration, Double(v.location.x / w) * duration))) })
             }.frame(height: 22)
-            HStack { Text("0:00"); Spacer(); Text(alignment.segments.count > 1 ? "\(alignment.segments.count - 1) punti di taglio (in rosso): clicca per guardarli" : "Un'unica parte: stesso montaggio"); Spacer(); Text(hms(duration)) }.font(.caption2).foregroundStyle(.secondary)
+            HStack { Text("0:00"); Spacer(); Text(alignment.segments.count > 1 ? "\(alignment.segments.count - 1) tagli in rosso, momenti da controllare in arancione: clicca per guardarli" : "Un'unica parte: stesso montaggio"); Spacer(); Text(hms(duration)) }.font(.caption2).foregroundStyle(.secondary)
         }.frame(maxWidth: 640)
     }
 }

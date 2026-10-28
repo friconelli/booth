@@ -168,20 +168,42 @@ func localCorr(_ ev: [Float], _ eo: [Float], t: Double, len: Double, d: Double) 
 }
 
 /// Un tratto del film (tempo dell'immagine scelta): [start, end) prende l'audio dell'altra copia da start+d; d nil = silenzio (lì l'altra copia non ha quella scena).
-struct MergeSegment { var start: Double; var end: Double; var d: Double? }
+struct MergeSegment { var start: Double; var end: Double; var d: Double?; var sure = true }   // sure: il confine d'inizio è stato trovato con certezza
 struct Alignment {
-    var k = 1.0; var segments: [MergeSegment] = []; var points: [AlignPoint] = []; var refLabel = ""; var refOrd = 0; var speedLabel = ""; var spread = 0.0; var nudge = 0.0   // correzione a mano dall'anteprima (secondi; positivo = l'audio arriva prima)
-    var d: Double { (segments.first { $0.d != nil }?.d ?? 0) + nudge }
+    var k = 1.0; var segments: [MergeSegment] = []; var points: [AlignPoint] = []; var refLabel = ""; var refOrd = 0; var speedLabel = ""; var spread = 0.0; var auto: [Int: Double] = [:]; var nudges: [Int: Double] = [:]   // auto: correzione trovata dalla verifica del film unito; nudges: correzione a mano per parte (indice della parte → secondi dall'anteprima (secondi; positivo = l'audio arriva prima)
+    var d: Double { (segments.first { $0.d != nil }?.d ?? 0) + (nudges[segments.firstIndex { $0.d != nil } ?? 0] ?? 0) }
+    /// Indice della parte che contiene il tempo t (dell'immagine scelta).
+    func part(at t: Double) -> Int { segments.lastIndex { $0.start <= t } ?? 0 }
+    /// Correzione a mano valida al tempo t.
+    func nudge(at t: Double) -> Double { nudges[part(at: t)] ?? 0 }
     /// Le parti con la correzione a mano applicata.
-    var effSegments: [MergeSegment] { segments.map { MergeSegment(start: $0.start, end: $0.end, d: $0.d.map { $0 + nudge }) } }
+    var effSegments: [MergeSegment] { segments.enumerated().map { i, s in MergeSegment(start: s.start, end: s.end, d: s.d.map { $0 + (nudges[i] ?? 0) + (auto[i] ?? 0) }, sure: s.sure) } }
     var isConstant: Bool { segments.count == 1 }
     /// I punti in cui le due copie hanno un montaggio diverso.
     var differences: [String] {
         var out: [String] = []
         for (i, s) in segments.enumerated() where i > 0 {
-            if s.d == nil { out.append(String(format: "a %@ alla copia dell'audio mancano %.1f s: lì l'audio resta in silenzio", hms(s.start), s.end - s.start)) }
-            else if let pd = segments[..<i].last(where: { $0.d != nil })?.d, let d = s.d, d - pd > 0.05 { out.append(String(format: "a %@ la copia dell'audio ha %.1f s in più (una scena che qui non c'è): vengono saltati", hms(s.start), d - pd)) }
+            if s.d == nil { out.append("a \(hms(s.start)) alla copia dell'audio mancano \(dur(s.end - s.start)): lì l'audio resta in silenzio") }
+            else if let pd = segments[..<i].last(where: { $0.d != nil })?.d, let d = s.d, d - pd > 0.02 { out.append("a \(hms(s.start)) la copia dell'audio ha \(dur(d - pd)) in più: vengono saltati") }
         }
+        return out
+    }
+    private func dur(_ x: Double) -> String { x >= 1 ? String(format: "%.1f s", x) : String(format: "%.0f ms", x * 1000) }
+    /// I momenti da guardare prima di creare il file: tagli trovati con poca certezza, misure in disaccordo con la parte e lunghi tratti senza misure sicure.
+    var risks: [RiskMoment] {
+        var r: [RiskMoment] = []
+        // un taglio incerto conta solo se lo spostamento supera un fotogramma: sotto, anche un punto sbagliato non si vede
+        func jump(_ i: Int) -> Double { let pd = segments[..<i].last { $0.d != nil }?.d, nd = segments[i...].first { $0.d != nil }?.d; return segments[i].d == nil ? segments[i].end - segments[i].start : abs((nd ?? 0) - (pd ?? 0)) }
+        for (i, s) in segments.enumerated() where i > 0 && !s.sure && jump(i) > 0.045 { r.append(RiskMoment(t: s.start, why: s.d == nil ? "Qui manca un pezzo all'altra copia, ma il punto esatto è incerto" : "Cambio di montaggio in un punto poco chiaro")) }
+        for p in points where p.good {
+            let a = part(at: p.t), b = part(at: p.t + 20)
+            guard a == b, let d = segments[a].d, abs(p.d - d) > 0.045 else { continue }
+            r.append(RiskMoment(t: p.t + 10, why: String(format: "Una misura qui dà uno scarto diverso di %.0f ms", abs(p.d - d) * 1000)))
+        }
+        let sure = points.filter(\.good).map(\.t)
+        for (x, y) in zip(sure, sure.dropFirst()) where y - x > 120 { r.append(RiskMoment(t: (x + y) / 2, why: String(format: "Per %.0f minuti non ci sono misure sicure (dialoghi senza musica?)", (y - x) / 60))) }
+        var out: [RiskMoment] = []
+        for m in r.sorted(by: { $0.t < $1.t }) { if let l = out.last, m.t - l.t < 20 { continue }; out.append(m) }
         return out
     }
     var lines: [String] {
@@ -190,18 +212,19 @@ struct Alignment {
         l.append(abs(d) < 0.0005 ? "Nessuno sfasamento all'inizio" : String(format: "All'inizio l'audio dell'altra copia è %@ di %.3f s: viene spostato", d > 0 ? "in ritardo" : "in anticipo", abs(d)))
         let diff = differences; if !diff.isEmpty { l.append("Montaggio diverso in \(diff.count) punt\(diff.count == 1 ? "o" : "i"):"); l += diff.map { "  – " + $0 } }
         let good = points.filter(\.good); if !good.isEmpty { l.append(String(format: "Allineamento controllato in %d tratti di tutto il film: scarto massimo dentro ogni parte %.0f ms", good.count, spread * 1000)) }
-        if abs(nudge) > 0.0005 { l.append(String(format: "Correzione a mano dopo il controllo a vista: audio %@ di %.0f ms", nudge > 0 ? "anticipato" : "ritardato", abs(nudge) * 1000)) }
+        for (i, n) in nudges.sorted(by: { $0.key < $1.key }) where abs(n) > 0.0005 && segments.indices.contains(i) { l.append(String(format: "Correzione a mano dopo il controllo a vista: audio %@ di %.0f ms %@", n > 0 ? "anticipato" : "ritardato", abs(n) * 1000, segments.count > 1 ? "da \(hms(segments[i].start)) a \(hms(segments[i].end))" : "in tutto il film")) }
         l.append("Riferimento: \(refLabel)")
         return l
     }
 }
+struct RiskMoment: Hashable { var t: Double; var why: String }
 enum AlignOutcome { case ok(Alignment), fail(String, [AlignPoint]) }
 
 let knownSpeeds: [(Double, String)] = [(23.976 / 25, "25 → 23,976 fps"), (25 / 23.976, "23,976 → 25 fps"), (24 / 25, "25 → 24 fps"), (25 / 24, "24 → 25 fps"), (23.976 / 24, "24 → 23,976 fps"), (24 / 23.976, "23,976 → 24 fps"), (29.97 / 25, "25 → 29,97 fps"), (25 / 29.97, "29,97 → 25 fps")]
 
 /// Divide il film in parti a scarto costante. Restituisce le parti, i punti misurati, lo scarto massimo dentro le parti e, se lo scarto cresce in modo regolare, la deriva da correggere.
 func segmentAlignment(_ ev: [Float], _ eo: [Float], vDur: Double) -> (segments: [MergeSegment], points: [AlignPoint], spread: Double, drift: Double?, why: String?) {
-    let step = 5.0, L = 20.0, tol = 0.08
+    let step = 5.0, L = 20.0, tol = 0.03   // le misure sono precise al centesimo: anche i micro-tagli di 1-2 fotogrammi diventano parti
     // punto di partenza: ricerca larga (fino a 5 minuti, per esempio loghi diversi in testa)
     var start: Double?
     for f in [0.3, 0.5, 0.15, 0.7, 0.85] { if let p = lagSearch(ev, eo, t: f * vDur, len: 40, guess: 0, search: 300), p.good { start = p.d; break } }
@@ -213,12 +236,19 @@ func segmentAlignment(_ ev: [Float], _ eo: [Float], vDur: Double) -> (segments: 
         if let p = p { pts.append(p); if p.good { prev = p.d } }
         t += step
     }
-    // parti: punti affidabili consecutivi con lo stesso scarto (almeno 3, cioè 10 s di film); i punti isolati diversi sono scartati
+    // misure deboli (somiglianza bassa, per esempio dialoghi in lingue diverse) che però coincidono al millesimo per almeno 3 tratti di fila: non è un caso, valgono come affidabili
+    var i0 = 0
+    while i0 < pts.count {
+        var j = i0 + 1; while j < pts.count && abs(pts[j].d - pts[j - 1].d) < 0.005 && pts[j].t - pts[j - 1].t < step + 0.5 { j += 1 }
+        if j - i0 >= 3 { for i in i0..<j where pts[i].corr >= 0.1 { pts[i].good = true } }
+        i0 = j
+    }
+    // parti: punti affidabili consecutivi con lo stesso scarto (almeno 2: le misure sono precise al centesimo, due che coincidono non sono un caso); i punti isolati sono scartati
     var runs: [[AlignPoint]] = []
     for p in pts where p.good {
         if var last = runs.last, abs(p.d - last.map(\.d).sorted()[last.count / 2]) <= tol { last.append(p); runs[runs.count - 1] = last } else { runs.append([p]) }
     }
-    runs = runs.filter { $0.count >= 3 }
+    runs = runs.filter { $0.count >= 2 }
     var merged: [[AlignPoint]] = []
     for r in runs { if let last = merged.last, abs(med(last) - med(r)) <= tol { merged[merged.count - 1] += r } else { merged.append(r) } }
     func med(_ r: [AlignPoint]) -> Double { let s = r.map(\.d).sorted(); return s[s.count / 2] }
@@ -229,34 +259,50 @@ func segmentAlignment(_ ev: [Float], _ eo: [Float], vDur: Double) -> (segments: 
     guard !merged.isEmpty, Double(confirmed.count) >= 0.35 * Double(all), holes <= 600 else {
         return ([], pts, 0, nil, holes > 600 ? String(format: "Per %.0f minuti di fila non trovo corrispondenze sicure tra le due copie: non posso garantire la sincronia.", holes / 60) : "Le due copie non si somigliano abbastanza per allinearle con sicurezza (\(confirmed.count) tratti confermati su \(all)). Forse non sono lo stesso film.")
     }
-    // deriva: nella parte più lunga lo scarto cresce col tempo → velocità non esatta
-    if let longest = merged.max(by: { $0.count < $1.count }), longest.count >= 20 {
-        let n = Double(longest.count), mt = longest.reduce(0) { $0 + $1.t } / n, md = longest.reduce(0) { $0 + $1.d } / n
-        let b = longest.reduce(0) { $0 + ($1.t - mt) * ($1.d - md) } / max(1e-9, longest.reduce(0) { $0 + ($1.t - mt) * ($1.t - mt) })
-        if abs(b) * vDur > 0.03 { return ([], pts, 0, b, nil) }
+    // deriva: lo scarto cresce in modo regolare in tutto il film → velocità non esatta. Si guarda la mediana ogni 5 minuti: una deriva vera è una retta
+    // che spiega quasi tutta la variazione; i micro-tagli di montaggio invece fanno salire e scendere lo scarto e non vanno scambiati per una deriva
+    var bt: [Double] = [], bd: [Double] = []
+    for (_, g) in Dictionary(grouping: merged.flatMap { $0 }, by: { Int($0.t / 300) }) where g.count >= 5 { bt.append(g.map(\.t).reduce(0.0, +) / Double(g.count)); bd.append(med(g)) }
+    if bt.count >= 6 {
+        let n = Double(bt.count), mt: Double = bt.reduce(0.0, +) / n, md: Double = bd.reduce(0.0, +) / n
+        var sxy = 0.0, sxx = 0.0; for i in bt.indices { sxy += (bt[i] - mt) * (bd[i] - md); sxx += (bt[i] - mt) * (bt[i] - mt) }
+        let b = sxy / max(1e-9, sxx)
+        var before = 0.0, after = 0.0; for i in bt.indices { let e = bd[i] - md; before += e * e; let r = e - b * (bt[i] - mt); after += r * r }
+        if abs(b) * vDur > 0.06 && after < 0.2 * before { return ([], pts, 0, b, nil) }
     }
-    let spread = merged.map { r in let m = med(r); return r.map { abs($0.d - m) }.max() ?? 0 }.max() ?? 0
+    for i in 1..<max(1, merged.count) {   // scene in ordine diverso (si tornerebbe indietro di oltre 10 minuti): non si può fare
+        let d1 = med(merged[i - 1]), d2 = med(merged[i]); if d1 - d2 > 600 { return ([], pts, 0, nil, "Le due copie hanno le scene in un ordine diverso: non si possono unire.") }
+    }
     // confini precisi tra una parte e la successiva (passo 0,1 s)
-    var segs: [MergeSegment] = []; var segStart = 0.0
+    var segs: [MergeSegment] = []; var segStart = 0.0; var pendingSure = true
     for i in 0..<merged.count {
         let d1 = med(merged[i])
-        guard i + 1 < merged.count else { segs.append(MergeSegment(start: segStart, end: vDur, d: d1)); break }
-        let d2 = med(merged[i + 1]), lo = merged[i].last!.t, hi = merged[i + 1].first!.t + L, gap = max(0, d1 - d2)
-        if d2 < d1 && eoPos(lo, d1) > eoPos(merged[i + 1].first!.t, d2) + 1 && gap > 600 { return ([], pts, 0, nil, "Le due copie hanno le scene in un ordine diverso: non si possono unire.") }
+        guard i + 1 < merged.count else { segs.append(MergeSegment(start: segStart, end: vDur, d: d1, sure: pendingSure)); break }
+        let d2 = med(merged[i + 1]), lo = max(segStart + 0.1, merged[i].last!.t), hi = max(lo + 0.2, merged[i + 1].first!.t + L), gap = max(0, d1 - d2)
         var m1: [Double] = [], m2: [Double] = []; var x = lo
-        while x < hi { m1.append(localCorr(ev, eo, t: x, len: 1, d: d1)); m2.append(localCorr(ev, eo, t: x, len: 1, d: d2)); x += 0.1 }
-        let gn = Int((gap * 10).rounded()); var bestT = lo, bestC = Double.infinity
+        while x < hi { m1.append(localCorr(ev, eo, t: x - 1, len: 2, d: d1)); m2.append(localCorr(ev, eo, t: x - 1, len: 2, d: d2)); x += 0.1 }   // finestre di 2 s: in un passaggio sommesso 1 s non basta
+        let gn = Int((gap * 10).rounded()); var bestT = lo, bestC = Double.infinity, bestI = 0
         let pre = m1.reduce(into: [0.0]) { $0.append($0.last! + (1 - $1)) }, post = m2.reversed().reduce(into: [0.0]) { $0.append($0.last! + (1 - $1)) }
         for c in 0...max(0, m1.count - gn) {   // c = indice del confine; [c, c+gn) silenzio se all'altra copia manca un pezzo
             let after = m2.count - min(m2.count, c + gn)
             let cost = pre[c] + post[after] + 0.5 * Double(min(gn, m1.count - c))
-            if cost < bestC { bestC = cost; bestT = lo + Double(c) * 0.1 }
+            if cost < bestC { bestC = cost; bestT = lo + Double(c) * 0.1; bestI = c }
         }
-        segs.append(MergeSegment(start: segStart, end: bestT, d: d1))
-        if gap > 0.05 { segs.append(MergeSegment(start: bestT, end: bestT + gap, d: nil)); segStart = bestT + gap } else { segStart = bestT }
+        // certezza: nei 3 s prima del taglio lo scarto vecchio deve somigliare chiaramente più del nuovo, e viceversa dopo
+        let w = 30, b0 = max(0, bestI - w), a0 = min(m1.count, bestI + gn), a1 = min(m1.count, a0 + w)
+        let before = (b0..<bestI).map { m1[$0] - m2[$0] }, after = (a0..<a1).map { m2[$0] - m1[$0] }
+        func mean(_ v: [Double]) -> Double { v.isEmpty ? 0 : v.reduce(0, +) / Double(v.count) }
+        let sure = mean(before) > 0.08 && mean(after) > 0.08
+        segs.append(MergeSegment(start: segStart, end: bestT, d: d1, sure: pendingSure))
+        if gap > 0.05 { segs.append(MergeSegment(start: bestT, end: bestT + gap, d: nil, sure: sure)); segStart = bestT + gap; pendingSure = true } else { segStart = bestT; pendingSure = sure }
     }
-    return (segs.filter { $0.end - $0.start > 0.01 }, pts.map { p in var q = p; q.good = support(p); return q }, spread, nil, nil)
-    func eoPos(_ t: Double, _ d: Double) -> Double { t + d }
+    // ogni parte deve finire dopo che è cominciata; i pezzi di meno di 10 ms si uniscono alla parte prima (senza buchi nel tempo)
+    var clean: [MergeSegment] = []
+    for sg in segs { if sg.end - sg.start > 0.01 || clean.isEmpty { clean.append(sg) } else { clean[clean.count - 1].end = sg.end } }
+    // conferme e scarto massimo rispetto alle parti trovate
+    func dAt(_ t: Double) -> Double? { clean.last { $0.start <= t }?.d }
+    let spread = pts.filter(\.good).compactMap { p -> Double? in guard let a = dAt(p.t), dAt(p.t + L) == a, clean.last(where: { $0.start <= p.t })!.end >= p.t + L else { return nil }; return abs(p.d - a) }.filter { $0 < 0.1 }.max() ?? 0
+    return (clean, pts.map { p in var q = p; q.good = support(p); return q }, spread, nil, nil)
 }
 
 /// Allinea l'audio dell'altra copia (`o`) all'immagine della copia scelta (`v`): velocità (frame rate diversi), spostamento iniziale e, se le copie hanno un montaggio
@@ -348,7 +394,7 @@ func needsAlignment(_ plan: MergePlan) -> Bool { (plan.audio + plan.subs).contai
 
 /// Crea il film unito: immagine (e capitoli) dalla copia scelta, le tracce scelte da entrambe; quelle dell'altra copia spostate (e se serve rallentate o accelerate)
 /// per coincidere con l'immagine. Nessuno dei due file viene toccato; il risultato viene verificato prima di essere salvato.
-func runMerge(_ s: [MergeSource], _ plan: MergePlan, alignment: Alignment?, progress: @escaping (Double, String) -> Void) -> FixResult {
+func runMerge(_ s: [MergeSource], _ plan: MergePlan, alignment: Alignment?, attempt: Int = 1, progress: @escaping (Double, String) -> Void) -> FixResult {
     guard let mm = tool("mkvmerge") else { return FixResult(ok: false, message: "Per unire i film serve MKVToolNix (mkvmerge): installalo con «brew install mkvtoolnix».") }
     guard let ff = tool("ffmpeg") else { return FixResult(ok: false, message: "ffmpeg non trovato.") }
     let V = s[plan.video], O = s[1 - plan.video], vi = plan.video
@@ -365,7 +411,7 @@ func runMerge(_ s: [MergeSource], _ plan: MergePlan, alignment: Alignment?, prog
     if let free = (try? dir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage, Double(free) < need + 2e8 { return FixResult(ok: false, message: "Spazio insufficiente: servono circa \(fmtBytes(need)) liberi.") }
     let work = dir.appendingPathComponent(".booth-merge-\(UUID().uuidString.prefix(8))"); try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
     let tmp = work.appendingPathComponent("unito.mkv")
-    defer { try? FileManager.default.removeItem(at: work) }
+    defer { if let k = ProcessInfo.processInfo.environment["BOOTH_KEEP_MERGE"] { try? FileManager.default.moveItem(at: tmp, to: URL(fileURLWithPath: k)) }; try? FileManager.default.removeItem(at: work) }   // diagnosi: conserva anche il file scartato
     var lines: [String] = ["Immagine da «\(V.url.lastPathComponent)»: \(V.video?.summary ?? "")"]
     if let a = alignment, !fromO.isEmpty { lines += a.lines }
 
@@ -460,28 +506,67 @@ func runMerge(_ s: [MergeSource], _ plan: MergePlan, alignment: Alignment?, prog
     guard let np = Probe(tmp.path) else { return FixResult(ok: false, message: "Il film unito non è leggibile.", lines: lines) }
     if np.audio.count != chosenA.count || np.subs.count != chosenS.count || np.of("video").count != 1 { return FixResult(ok: false, message: "Il film unito ha un numero di tracce diverso dal previsto (audio \(np.audio.count)/\(chosenA.count), sottotitoli \(np.subs.count)/\(chosenS.count)).", lines: lines) }
     if abs(np.duration - V.probe.duration) > 2 { return FixResult(ok: false, message: String(format: "La durata del film unito (%@) è diversa da quella della copia con l'immagine (%@).", hms(np.duration), hms(V.probe.duration)), lines: lines) }
-    // la sincronia si rimisura sul file finito: ogni traccia arrivata dall'altra copia contro l'audio di riferimento della copia con l'immagine
+    // la sincronia si rimisura sul file finito: ogni traccia arrivata dall'altra copia contro l'audio di riferimento della copia con l'immagine.
+    // Se in una parte l'audio risulta spostato in modo costante, la correzione si applica da sola e il film si rifà (al massimo due volte);
+    // i tratti troppo sommessi per essere misurati non bloccano: vengono indicati da guardare.
     if let a = alignment {
-        // punti di controllo: 20%, 50%, 80% e, per ogni parte del film, inizio, centro e fine: ogni parte deve essere confermata, altrimenti il file non si salva
         let L = 20.0, vd = V.probe.duration
         func clamp(_ x: Double) -> Double { max(2, min(x, vd - L - 2)) }
-        let parts = segs.filter { $0.d != nil && $0.end - $0.start >= L + 4 }
+        let parts = segs.indices.filter { segs[$0].d != nil && segs[$0].end - segs[$0].start >= L + 4 }
         let global = [0.2, 0.5, 0.8].map { clamp($0 * vd) }
-        let perPart = parts.map { sg in [sg.start + 2, (sg.start + sg.end - L) / 2, sg.end - L - 2].map(clamp) }
+        var corrected = a; var needRedo = false
+        // un dubbio in un momento già proposto per il controllo a vista (per esempio musica ripetitiva, dove l'audio da solo non può decidere) non blocca:
+        // resta da guardare. Altrove invece è un errore vero.
+        let risky = a.risks.map(\.t)
+        func flagged(_ t: Double) -> Bool { risky.contains { abs($0 - t) < 25 } }
+        var watch: [Double] = []
         for (pos, id) in plan.audio.enumerated() where all[id]?.src != vi {
             progress(0.85 + 0.1 * Double(pos) / Double(plan.audio.count), "Verifico la sincronia dell'audio \(pos + 1)…")
             let sr = Int(dbl(np.audio[pos]["sample_rate"]) ?? 48000)
-            func meas(_ ts: [Double]) -> [AlignPoint] { ts.compactMap { measurePoint(ref: (V.url.path, a.refOrd), other: (tmp.path, pos, sr), k: 1, t: $0, guess: 0, search: 3, len: L) }.filter(\.good) }
-            var pts = meas(global)
-            for (pi, ts) in perPart.enumerated() {
-                let got = meas(ts); pts += got
-                if got.isEmpty && parts.count > 1 { return FixResult(ok: false, message: "Non riesco a confermare la sincronia dell'audio \(pos + 1) nella parte \(hms(parts[pi].start))–\(hms(parts[pi].end)) del film unito: non lo salvo.", lines: lines) }
+            func meas(_ t: Double) -> AlignPoint? { measurePoint(ref: (V.url.path, a.refOrd), other: (tmp.path, pos, sr), k: 1, t: clamp(t), guess: 0, search: 3, len: L).flatMap { $0.good ? $0 : nil } }
+            func raw(_ p: AlignPoint) -> Double { p.d + a.nudge(at: p.t) }   // con una correzione a mano di n secondi l'audio deve risultare spostato proprio di n
+            // uno sfasamento vale solo se lo conferma almeno un'altra misura (finestre spostate di ±6 s o lunga 40 s): nei passaggi con musica
+            // ripetitiva una singola correlazione può trovare il picco sbagliato. Se le altre misure danno sincronia, conta quella.
+            var memo: [Double: Double] = [:]
+            func res(_ p: AlignPoint) -> Double {
+                let r0 = raw(p); guard abs(r0) > 0.045 else { return r0 }
+                if let m = memo[p.t] { return m }
+                let more = [p.t - 6, p.t + 6].compactMap(meas).map(raw) + [measurePoint(ref: (V.url.path, a.refOrd), other: (tmp.path, pos, sr), k: 1, t: clamp(p.t - 10), guess: 0, search: 3, len: 40)].compactMap { $0?.good == true ? raw($0!) : nil }
+                let agree = more.filter { abs($0 - r0) < 0.02 }.count, ok = more.filter { abs($0) <= 0.045 }
+                let r = agree >= 1 || ok.isEmpty ? r0 : ok.sorted()[ok.count / 2]; memo[p.t] = r; return r
             }
+            var pts = global.compactMap(meas); var unverified: [MergeSegment] = []
+            for pi in parts {
+                let sg = segs[pi]
+                // inizio, centro e fine della parte; se l'audio è troppo sommesso si prova ogni 10 s (al massimo 12 tentativi)
+                var got = [sg.start + 2, (sg.start + sg.end - L) / 2, sg.end - L - 2].compactMap(meas)
+                if got.isEmpty { var t = sg.start + 7; var n = 0; while got.isEmpty && t < sg.end - L && n < 12 { if let p = meas(t) { got.append(p) }; t += 10; n += 1 } }
+                if got.isEmpty { unverified.append(sg); continue }
+                pts += got
+                let r = got.map(res), m = r.reduce(0, +) / Double(r.count)
+                if abs(m) > 0.045 {
+                    // spostamento costante in tutta la parte → si corregge da solo; altrimenti il taglio è nel punto sbagliato e va guardato
+                    if r.count >= 2 && (r.max()! - r.min()!) < 0.02 && attempt < 3 { corrected.auto[a.part(at: sg.start + 0.01), default: 0] += m; needRedo = true }
+                    else if flagged(sg.start + (sg.end - sg.start) / 2) || got.contains(where: { abs(res($0)) > 0.045 && flagged($0.t + L / 2) }) { watch += got.filter { abs(res($0)) > 0.045 }.map { $0.t + L / 2 }; continue }
+                    else { let w = got.max { abs(res($0)) < abs(res($1)) }!; return FixResult(ok: false, message: String(format: "Nel film unito l'audio %d risulta sfasato di %.0f ms verso %@: guardalo nell'anteprima e correggilo con «Audio prima/dopo».", pos + 1, abs(res(w)) * 1000, hms(w.t + L / 2)), lines: lines, badTime: w.t + L / 2) }
+                }
+            }
+            if needRedo { continue }
             guard pts.count >= 2 else { return FixResult(ok: false, message: "Non riesco a verificare la sincronia dell'audio \(pos + 1) nel film unito: non lo salvo.", lines: lines) }
-            // con una correzione a mano di n secondi, l'audio deve risultare spostato proprio di n rispetto al riferimento
-            let worst = pts.max { abs($0.d + a.nudge) < abs($1.d + a.nudge) }!, err = abs(worst.d + a.nudge)
-            if err > 0.045 { return FixResult(ok: false, message: String(format: "Nel film unito l'audio %d risulta sfasato di %.0f ms a %@: non lo salvo.", pos + 1, err * 1000, hms(worst.t)), lines: lines) }
-            lines.append(String(format: "Sincronia dell'audio %d nel film unito: verificata in %d punti%@, scarto massimo %.0f ms", pos + 1, pts.count, parts.count > 1 ? " (tutte le \(parts.count) parti del film)" : "", err * 1000))
+            let checked = pts.filter { !(abs(res($0)) > 0.045 && flagged($0.t + L / 2)) }; watch += pts.filter { abs(res($0)) > 0.045 && flagged($0.t + L / 2) }.map { $0.t + L / 2 }
+            guard let worst = checked.max(by: { abs(res($0)) < abs(res($1)) }) else { return FixResult(ok: false, message: "Non riesco a verificare la sincronia dell'audio \(pos + 1) nel film unito: non lo salvo.", lines: lines) }
+            let err = abs(res(worst))
+            if err > 0.045 { return FixResult(ok: false, message: String(format: "Nel film unito l'audio %d risulta sfasato di %.0f ms verso %@: guardalo nell'anteprima e correggilo con «Audio prima/dopo».", pos + 1, err * 1000, hms(worst.t + L / 2)), lines: lines, badTime: worst.t + L / 2) }
+            lines.append(String(format: "Sincronia dell'audio %d nel film unito: verificata in %d punti%@, scarto massimo %.0f ms", pos + 1, pts.count, parts.count > 1 ? " (\(parts.count - unverified.count) parti su \(parts.count))" : "", err * 1000))
+            if !watch.isEmpty { lines.append("Audio dubbio anche nel film unito, da guardare: " + Set(watch.map { Int($0) }).sorted().map { hms(Double($0)) }.joined(separator: ", ")) }
+            if !unverified.isEmpty { lines.append("Audio troppo sommesso per verificarlo da sola, da guardare: " + unverified.map { "\(hms($0.start))–\(hms($0.end))" }.joined(separator: ", ")) }
+        }
+        if needRedo {
+            let fixed = corrected.auto.filter { abs($0.value) > 0.0005 }.sorted { $0.key < $1.key }
+            progress(0.05, "Correggo da solo \(fixed.count) part\(fixed.count == 1 ? "e" : "i") e rifaccio il film…")
+            var r = runMerge(s, plan, alignment: corrected, attempt: attempt + 1, progress: progress)
+            r.lines.insert(contentsOf: fixed.map { String(format: "Correzione automatica dopo la verifica: audio %@ di %.0f ms da %@ a %@", $0.value > 0 ? "anticipato" : "ritardato", abs($0.value) * 1000, hms(segs[$0.key].start), hms(segs[$0.key].end)) }, at: min(r.lines.count, 1))
+            return r
         }
     }
     func packetIssues(_ p: Probe, _ path: String) -> Int { let c = Collector(); scanPackets(p, path, c); return c.findings.filter { $0.sev >= .warn }.count }
