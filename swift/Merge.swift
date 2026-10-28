@@ -170,7 +170,7 @@ func localCorr(_ ev: [Float], _ eo: [Float], t: Double, len: Double, d: Double) 
 /// Un tratto del film (tempo dell'immagine scelta): [start, end) prende l'audio dell'altra copia da start+d; d nil = silenzio (lì l'altra copia non ha quella scena).
 struct MergeSegment { var start: Double; var end: Double; var d: Double?; var sure = true }   // sure: il confine d'inizio è stato trovato con certezza
 struct Alignment {
-    var k = 1.0; var segments: [MergeSegment] = []; var points: [AlignPoint] = []; var refLabel = ""; var refOrd = 0; var speedLabel = ""; var spread = 0.0; var auto: [Int: Double] = [:]; var nudges: [Int: Double] = [:]   // auto: correzione trovata dalla verifica del film unito; nudges: correzione a mano per parte (indice della parte → secondi dall'anteprima (secondi; positivo = l'audio arriva prima)
+    var k = 1.0; var segments: [MergeSegment] = []; var points: [AlignPoint] = []; var refLabel = ""; var refOrd = 0; var speedLabel = ""; var spread = 0.0; var auto: [Int: Double] = [:]; var nudges: [Int: Double] = [:]; var measOrd: Int? = nil; var notes: [String] = []   // auto: correzione trovata dalla verifica del film unito; nudges: correzione a mano per parte (indice della parte → secondi dall'anteprima (secondi; positivo = l'audio arriva prima)
     var d: Double { (segments.first { $0.d != nil }?.d ?? 0) + (nudges[segments.firstIndex { $0.d != nil } ?? 0] ?? 0) }
     /// Indice della parte che contiene il tempo t (dell'immagine scelta).
     func part(at t: Double) -> Int { segments.lastIndex { $0.start <= t } ?? 0 }
@@ -213,7 +213,7 @@ struct Alignment {
         let diff = differences; if !diff.isEmpty { l.append("Montaggio diverso in \(diff.count) punt\(diff.count == 1 ? "o" : "i"):"); l += diff.map { "  – " + $0 } }
         let good = points.filter(\.good); if !good.isEmpty { l.append(String(format: "Allineamento controllato in %d tratti di tutto il film: scarto massimo dentro ogni parte %.0f ms", good.count, spread * 1000)) }
         for (i, n) in nudges.sorted(by: { $0.key < $1.key }) where abs(n) > 0.0005 && segments.indices.contains(i) { l.append(String(format: "Correzione a mano dopo il controllo a vista: audio %@ di %.0f ms %@", n > 0 ? "anticipato" : "ritardato", abs(n) * 1000, segments.count > 1 ? "da \(hms(segments[i].start)) a \(hms(segments[i].end))" : "in tutto il film")) }
-        l.append("Riferimento: \(refLabel)")
+        l.append("Riferimento: \(refLabel)"); l += notes
         return l
     }
 }
@@ -223,16 +223,16 @@ enum AlignOutcome { case ok(Alignment), fail(String, [AlignPoint]) }
 let knownSpeeds: [(Double, String)] = [(23.976 / 25, "25 → 23,976 fps"), (25 / 23.976, "23,976 → 25 fps"), (24 / 25, "25 → 24 fps"), (25 / 24, "24 → 25 fps"), (23.976 / 24, "24 → 23,976 fps"), (24 / 23.976, "23,976 → 24 fps"), (29.97 / 25, "25 → 29,97 fps"), (25 / 29.97, "29,97 → 25 fps")]
 
 /// Divide il film in parti a scarto costante. Restituisce le parti, i punti misurati, lo scarto massimo dentro le parti e, se lo scarto cresce in modo regolare, la deriva da correggere.
-func segmentAlignment(_ ev: [Float], _ eo: [Float], vDur: Double) -> (segments: [MergeSegment], points: [AlignPoint], spread: Double, drift: Double?, why: String?) {
+func segmentAlignment(_ ev: [Float], _ eo: [Float], vDur: Double, maxSearch: Double = 300) -> (segments: [MergeSegment], points: [AlignPoint], spread: Double, drift: Double?, why: String?) {
     let step = 5.0, L = 20.0, tol = 0.03   // le misure sono precise al centesimo: anche i micro-tagli di 1-2 fotogrammi diventano parti
     // punto di partenza: ricerca larga (fino a 5 minuti, per esempio loghi diversi in testa)
     var start: Double?
-    for f in [0.3, 0.5, 0.15, 0.7, 0.85] { if let p = lagSearch(ev, eo, t: f * vDur, len: 40, guess: 0, search: 300), p.good { start = p.d; break } }
+    for f in [0.3, 0.5, 0.15, 0.7, 0.85] { if let p = lagSearch(ev, eo, t: f * vDur, len: 40, guess: 0, search: maxSearch), p.good { start = p.d; break } }
     guard var prev = start else { return ([], [], 0, nil, "Non trovo corrispondenze tra l'audio delle due copie: forse non sono lo stesso film.") }
     var pts: [AlignPoint] = []; var t = 0.0
     while t + L <= vDur {
-        var p = lagSearch(ev, eo, t: t, len: L, guess: prev, search: 8)
-        if p?.good != true, let w = lagSearch(ev, eo, t: t, len: L, guess: prev, search: 300), w.good { p = w }
+        var p = lagSearch(ev, eo, t: t, len: L, guess: maxSearch < 8 ? 0 : prev, search: min(8, maxSearch))
+        if maxSearch > 8, p?.good != true, let w = lagSearch(ev, eo, t: t, len: L, guess: prev, search: maxSearch), w.good { p = w }
         if let p = p { pts.append(p); if p.good { prev = p.d } }
         t += step
     }
@@ -305,6 +305,29 @@ func segmentAlignment(_ ev: [Float], _ eo: [Float], vDur: Double) -> (segments: 
     return (clean, pts.map { p in var q = p; q.good = support(p); return q }, spread, nil, nil)
 }
 
+/// Scarto del doppiaggio (traccia scelta rispetto alla traccia misurata, nello stesso file) al tempo u dell'altra copia; nil dove al doppiaggio manca il pezzo.
+func dubOffset(_ b: [MergeSegment], at u: Double) -> Double? { (b.last { $0.start <= u } ?? b.first)?.d }
+/// Compone le parti copia→copia (tempo dell'immagine t → tempo dell'altra copia u = t + d) con quelle del doppiaggio (tempo u → u + d'):
+/// ogni parte di `a` viene tagliata dove, nel tempo dell'altra copia, comincia una nuova parte del doppiaggio.
+func composeSegments(_ a: [MergeSegment], _ b: [MergeSegment]) -> [MergeSegment] {
+    var out: [MergeSegment] = []
+    for sg in a {
+        guard let d = sg.d else { out.append(sg); continue }
+        var cuts = [sg.start]
+        for bs in b.dropFirst() { let t = bs.start - d; if t > sg.start + 0.01 && t < sg.end - 0.01 { cuts.append(t) } }
+        cuts.append(sg.end)
+        for (x, y) in zip(cuts, cuts.dropFirst()) {
+            let bi = b.lastIndex { $0.start <= x + d + 0.001 } ?? 0, piece = b[bi]
+            out.append(MergeSegment(start: x, end: y, d: piece.d.map { d + $0 }, sure: x == sg.start ? sg.sure : piece.sure))
+        }
+    }
+    var clean: [MergeSegment] = []   // pezzi consecutivi con lo stesso scarto (entro 1 ms) tornano una parte sola
+    for sg in out {
+        if var l = clean.last, sg.end - sg.start < 0.01 || (l.d != nil && sg.d != nil && abs(l.d! - sg.d!) < 0.001) || (l.d == nil && sg.d == nil) { l.end = sg.end; clean[clean.count - 1] = l } else { clean.append(sg) }
+    }
+    return clean
+}
+
 /// Allinea l'audio dell'altra copia (`o`) all'immagine della copia scelta (`v`): velocità (frame rate diversi), spostamento iniziale e, se le copie hanno un montaggio
 /// diverso, i punti in cui saltare un pezzo o lasciare silenzio. Ogni parte viene controllata in tutto il film.
 func alignAudio(v: MergeSource, o: MergeSource, oTrack: MergeTrack, progress: @escaping (Double, String) -> Void = { _, _ in }) -> AlignOutcome {
@@ -313,25 +336,60 @@ func alignAudio(v: MergeSource, o: MergeSource, oTrack: MergeTrack, progress: @e
     var k = 1.0, speedLabel = ""
     if let ofps = o.video?.fps, vi.fps > 0, ofps > 0, abs(vi.fps / ofps - 1) > 0.001 { k = vi.fps / ofps; speedLabel = knownSpeeds.first { abs($0.0 - k) < 0.0005 }?.1 ?? String(format: "%.3f → %.3f fps", ofps, vi.fps) }
     else if o.probe.duration > 0 { let rd = o.probe.duration / vi.duration; if abs(rd - 1) > 0.01, let kn = knownSpeeds.first(where: { abs($0.0 - rd) < 0.0015 }) { k = kn.0; speedLabel = kn.1 + " (dalla durata)" } }
-    // 2) traccia di riferimento nella copia con l'immagine: stessa lingua se c'è (corrispondenza più forte), poi la predefinita, poi le altre
-    let vAudio = v.tracks.filter { $0.kind == "a" }
+    // 2) quali tracce confrontare. Meglio di tutto: una lingua che hanno tutte e due le copie (di solito l'originale), perché due registrazioni uguali
+    //    combaciano molto meglio di due doppiaggi; la traccia scelta sta nello stesso file della seconda, quindi si sposta allo stesso modo.
+    //    Altrimenti, come prima: la traccia scelta contro quella della copia con l'immagine nella stessa lingua, la predefinita o le altre.
+    let vAudio = v.tracks.filter { $0.kind == "a" }, oAudio = o.tracks.filter { $0.kind == "a" }
     guard !vAudio.isEmpty else { return .fail("Il film con l'immagine scelta non ha audio: non c'è niente con cui allineare l'altra traccia.", []) }
-    let refs = Array((vAudio.filter { $0.effLang == oTrack.effLang && !$0.effLang.isEmpty } + vAudio.filter(\.isDefault) + vAudio).reduce(into: [MergeTrack]()) { if !$0.contains($1) { $0.append($1) } }.prefix(2))
-    var eo = fullEnvelope(o.url.path, track: oTrack.ord, k: k, sampleRate: oTrack.sampleRate, duration: o.probe.duration) { progress(0.3 * $0, "Leggo l'audio dell'altra copia…") }
+    var pairs: [(ref: MergeTrack, meas: MergeTrack)] = []
+    func addPair(_ r: MergeTrack, _ m: MergeTrack) { if !pairs.contains(where: { $0.ref == r && $0.meas == m }) { pairs.append((r, m)) } }
+    for rt in vAudio where !oTrack.effLang.isEmpty && rt.effLang == oTrack.effLang { addPair(rt, oTrack) }
+    let shared = Set(vAudio.map(\.effLang)).intersection(oAudio.map(\.effLang)).subtracting(["", oTrack.effLang])
+    for l in shared.sorted() {   // per ogni lingua in comune la traccia migliore di ciascuna copia
+        if let rt = vAudio.filter({ $0.effLang == l }).max(by: { audioScore($0) < audioScore($1) }), let mt = oAudio.filter({ $0.effLang == l }).max(by: { audioScore($0) < audioScore($1) }) { addPair(rt, mt) }
+    }
+    for rt in (vAudio.filter(\.isDefault) + vAudio).prefix(2) { addPair(rt, oTrack) }
+    pairs = Array(pairs.prefix(3))
+    var envO: [Int: [Float]] = [:]   // inviluppi dell'altra copia per traccia, alla velocità k attuale
+    func eoFor(_ t: MergeTrack, _ lab: String) -> [Float] {
+        if let e = envO[t.ord] { return e }
+        let e = fullEnvelope(o.url.path, track: t.ord, k: k, sampleRate: t.sampleRate, duration: o.probe.duration) { progress(0.25 * $0, lab) }; envO[t.ord] = e; return e
+    }
     var lastFail: AlignOutcome = .fail("Non trovo corrispondenze tra l'audio delle due copie.", [])
-    for (ri, rt) in refs.enumerated() {
-        let ev = fullEnvelope(v.url.path, track: rt.ord, duration: vi.duration) { progress(0.3 + 0.3 * (Double(ri) + $0) / Double(refs.count), "Leggo l'audio del film con l'immagine…") }
-        progress(0.6 + 0.3 * Double(ri) / Double(refs.count), "Confronto le due copie in tutto il film…")
+    for (ri, pr) in pairs.enumerated() {
+        let rt = pr.ref, mt = pr.meas, viaShared = mt.ord != oTrack.ord
+        var eo = eoFor(mt, "Leggo l'audio dell'altra copia…")
+        let ev = fullEnvelope(v.url.path, track: rt.ord, duration: vi.duration) { progress(0.25 + 0.3 * (Double(ri) + $0) / Double(pairs.count), "Leggo l'audio del film con l'immagine…") }
+        progress(0.55 + 0.3 * Double(ri) / Double(pairs.count), "Confronto le due copie in tutto il film…")
         var r = segmentAlignment(ev, eo, vDur: vi.duration)
         if let b = r.drift {   // p = t·(1+b) + a  →  la velocità giusta è k·(1+b)
-            k *= (1 + b); speedLabel = (speedLabel.isEmpty ? "" : speedLabel + ", ") + String(format: "deriva corretta (%+.4f%%)", b * 100)
-            eo = fullEnvelope(o.url.path, track: oTrack.ord, k: k, sampleRate: oTrack.sampleRate, duration: o.probe.duration) { progress(0.6 + 0.3 * $0, "Rileggo l'audio dell'altra copia con la velocità corretta…") }
+            k *= (1 + b); speedLabel = (speedLabel.isEmpty ? "" : speedLabel + ", ") + String(format: "deriva corretta (%+.4f%%)", b * 100); envO = [:]
+            eo = eoFor(mt, "Rileggo l'audio dell'altra copia con la velocità corretta…")
             r = segmentAlignment(ev, eo, vDur: vi.duration)
         }
         if let why = r.why { lastFail = .fail(why, r.points); continue }
         if r.drift != nil { lastFail = .fail("La velocità delle due copie non torna nemmeno dopo la correzione: non unisco.", r.points); continue }
+        var segs = r.segments, extra: [String] = []
+        var pts = r.points, spread = r.spread
+        if viaShared {
+            // la traccia scelta e quella misurata stanno nello stesso file, ma un doppiaggio montato male può essere spostato, anche a gradini diversi nel film.
+            // Si misura anche questo, con la musica e gli effetti che le due tracce hanno in comune, e si somma: scarto finale = copia→copia + doppiaggio→originale.
+            let et = eoFor(oTrack, "Leggo la traccia scelta dell'altra copia…")
+            progress(0.9, "Controllo il doppiaggio rispetto all'originale…")
+            let ib = segmentAlignment(eo, et, vDur: Double(eo.count) / envRate, maxSearch: 1)   // un doppiaggio nello stesso file non salta di secondi: si cerca entro ±1 s
+            if ib.why == nil, ib.drift == nil, !ib.segments.isEmpty {
+                segs = composeSegments(segs, ib.segments)
+                pts = pts.map { p in var q = p; if let x = dubOffset(ib.segments, at: p.t + p.d) { q.d += x }; return q }
+                spread = max(spread, ib.spread)
+                let steps = ib.segments.compactMap(\.d), lo = steps.min() ?? 0, hi = steps.max() ?? 0
+                if hi - lo > 0.02 || abs(lo) > 0.02 { extra.append(String(format: "Nell'altra copia il doppiaggio non è sempre a tempo con la traccia in %@ (da %+.0f a %+.0f ms in %d tratti): corretto tratto per tratto", langLabel(mt.effLang), lo * 1000, hi * 1000, ib.segments.filter { $0.d != nil }.count)) }
+                else { extra.append("Nell'altra copia il doppiaggio è a tempo con la traccia in \(langLabel(mt.effLang))") }
+            } else { extra.append("Non ho potuto misurare il doppiaggio rispetto alla traccia in \(langLabel(mt.effLang)) nell'altra copia (\(ib.why ?? "misure discordanti")): lo considero a tempo, controlla l'anteprima") }
+        }
         progress(1, "Allineamento trovato")
-        return .ok(Alignment(k: k, segments: r.segments, points: r.points, refLabel: "audio \(rt.ord + 1) del film con l'immagine (\(langLabel(rt.effLang)))", refOrd: rt.ord, speedLabel: speedLabel, spread: r.spread))
+        let label = viaShared ? "\(langLabel(rt.effLang)) di tutte e due le copie (audio \(rt.ord + 1) e audio \(mt.ord + 1)): la traccia scelta sta nello stesso file e si sposta allo stesso modo"
+                              : "audio \(rt.ord + 1) del film con l'immagine (\(langLabel(rt.effLang)))"
+        return .ok(Alignment(k: k, segments: segs, points: pts, refLabel: label, refOrd: rt.ord, speedLabel: speedLabel, spread: spread, measOrd: viaShared ? mt.ord : nil, notes: extra))
     }
     return lastFail
 }
@@ -531,8 +589,16 @@ func runMerge(_ s: [MergeSource], _ plan: MergePlan, alignment: Alignment?, atte
         for (pos, id) in plan.audio.enumerated() where all[id]?.src != vi {
             progress(0.85 + 0.1 * Double(pos) / Double(plan.audio.count), "Verifico la sincronia dell'audio \(pos + 1)…")
             let sr = Int(dbl(np.audio[pos]["sample_rate"]) ?? 48000)
-            func meas(_ t: Double) -> AlignPoint? { measurePoint(ref: (V.url.path, a.refOrd), other: (tmp.path, pos, sr), k: 1, t: clamp(t), guess: 0, search: 3, len: L).flatMap { $0.good ? $0 : nil } }
-            func raw(_ p: AlignPoint) -> Double { p.d + a.nudge(at: p.t) }   // con una correzione a mano di n secondi l'audio deve risultare spostato proprio di n
+            // allineamento fatto su una lingua comune: la sincronia l'ha già misurata quella traccia (due registrazioni uguali), qui si controlla che il film unito
+            // contenga proprio la traccia scelta messa al posto giusto, confrontandola con la stessa traccia nell'altra copia (scarto atteso: quello della parte)
+            let construct = a.measOrd != nil, ot = all[id]
+            func expected(_ t: Double) -> Double? { segs.last { $0.start <= t }?.d }
+            func meas(_ t: Double) -> AlignPoint? {
+                if construct, let ot = ot { let tc = clamp(t); guard let e = expected(tc), expected(tc + L) == e else { return nil }
+                    return measurePoint(ref: (tmp.path, pos), other: (O.url.path, ot.ord, ot.sampleRate), k: a.k, t: tc, guess: e, search: 1, len: L).flatMap { $0.good ? $0 : nil } }
+                return measurePoint(ref: (V.url.path, a.refOrd), other: (tmp.path, pos, sr), k: 1, t: clamp(t), guess: 0, search: 3, len: L).flatMap { $0.good ? $0 : nil }
+            }
+            func raw(_ p: AlignPoint) -> Double { construct ? p.d - (expected(p.t) ?? p.d) : p.d + a.nudge(at: p.t) }   // con una correzione a mano di n secondi l'audio deve risultare spostato proprio di n
             // uno sfasamento vale solo se lo conferma almeno un'altra misura (finestre spostate di ±6 s o lunga 40 s): nei passaggi con musica
             // ripetitiva una singola correlazione può trovare il picco sbagliato. Se le altre misure danno sincronia, conta quella.
             var memo: [Double: Double] = [:]
@@ -554,6 +620,7 @@ func runMerge(_ s: [MergeSource], _ plan: MergePlan, alignment: Alignment?, atte
                 let r = got.map(res), m = r.reduce(0, +) / Double(r.count)
                 if abs(m) > 0.045 {
                     // spostamento costante in tutta la parte → si corregge da solo; altrimenti il taglio è nel punto sbagliato e va guardato
+                    if construct { return FixResult(ok: false, message: String(format: "Nel film unito l'audio %d non è nella posizione prevista (%.0f ms verso %@): non lo salvo.", pos + 1, abs(m) * 1000, hms(sg.start)), lines: lines) }
                     if r.count >= 2 && (r.max()! - r.min()!) < 0.02 && attempt < 3 { corrected.auto[a.part(at: sg.start + 0.01), default: 0] += m; needRedo = true }
                     else if flagged(sg.start + (sg.end - sg.start) / 2) || got.contains(where: { abs(res($0)) > 0.045 && flagged($0.t + L / 2) }) { watch += got.filter { abs(res($0)) > 0.045 }.map { $0.t + L / 2 }; continue }
                     else { let w = got.max { abs(res($0)) < abs(res($1)) }!; return FixResult(ok: false, message: String(format: "Nel film unito l'audio %d risulta sfasato di %.0f ms verso %@: guardalo nell'anteprima e correggilo con «Audio prima/dopo».", pos + 1, abs(res(w)) * 1000, hms(w.t + L / 2)), lines: lines, badTime: w.t + L / 2) }

@@ -277,6 +277,14 @@ try:
     rc, o = merge(best, less, "--audio", "b0", "--output", os.path.join(T, "meno.mkv")); me = os.path.join(T, "meno.mkv")
     check(rc == 0 and re.search(r"a 2:[23]\d.* mancano 5\.0 s", o) is not None, "scena di 5 s mancante nella copia italiana: lì resta silenzio")
     if os.path.exists(me): ds = [sync(me, t) for t in (80, 300)]; check(all(abs(d) < 0.03 for d in ds), "prima e dopo il silenzio l'audio è a tempo (" + ", ".join(f"{d * 1000:+.0f} ms" for d in ds) + ")")
+    # copia con inglese e italiano, l'italiano montato male (120 ms in ritardo dopo 200 s); la copia con l'immagine ha solo l'inglese:
+    # si allinea inglese con inglese, si misura il doppiaggio rispetto all'inglese nello stesso file e si sommano le due cose
+    dub = os.path.join(T, "doppiata.mkv")
+    ff("-f", "lavfi", "-i", f"testsrc2=s=640x360:r=24000/1001:d={DM}", "-filter_complex", mix(IT, ",asplit[x][y];[x]atrim=0:200,asetpts=PTS-STARTPTS[p];[y]atrim=200,asetpts=PTS-STARTPTS,adelay=120:all=1[q];[p][q]concat=n=2:v=0:a=1,atrim=0:" + str(DM)) + "[a];" + mix(EN).replace("[m]", "[m2]").replace("[d]", "[d2]") + "[b]",
+       "-map", "0:v", "-map", "[a]", "-map", "[b]", "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "800k", "-c:a", "aac", "-b:a", "192k", "-metadata:s:a:0", "language=ita", "-metadata:s:a:1", "language=eng", "-shortest", dub)
+    rc, o = merge(best, dub, "--audio", "b0", "--output", os.path.join(T, "dub.mkv")); du = os.path.join(T, "dub.mkv")
+    check(rc == 0 and "inglese di tutte e due le copie" in o and "doppiaggio non è sempre a tempo" in o, "lingua in comune: allinea inglese con inglese e trova il doppiaggio italiano spostato a metà film")
+    if os.path.exists(du): ds = [sync(du, t) for t in (100, 300)]; check(all(abs(d) < 0.03 for d in ds), "italiano a tempo prima e dopo il tratto montato male (" + ", ".join(f"{d * 1000:+.0f} ms" for d in ds) + ")")
     other = film("altro_film.mkv", "640x360", "24000/1001", f"anoisesrc=d={DM}:c=brown:a=0.5:r=48000,{gate(55.55, 6)},aformat=channel_layouts=stereo", "ita", DM)
     rc, o = merge(best, other, "--audio", "b0", "--output", os.path.join(T, "altro.mkv"))
     check(rc != 0 and "NON ALLINEATO" in o and not os.path.exists(os.path.join(T, "altro.mkv")), "film diverso: unione rifiutata, nessun file creato")
