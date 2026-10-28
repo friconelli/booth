@@ -159,9 +159,24 @@ final class Store: ObservableObject {
             }
             let a = rep(pair[0], 0), b = rep(pair[1], 1)
             let src = [loadMergeSource(pair[0], src: 0), loadMergeSource(pair[1], src: 1)]
+            var dub: DubCheck?
+            if let x = src[0], let y = src[1] { dub = dubCheckBetween([x, y]) { p, st in DispatchQueue.main.async { self?.compareProgress = 0.99; self?.compareStatus = "Sincronia del doppiaggio · \(st)" } } }
             DispatchQueue.main.async {
                 self?.compareBusy = false
-                if let x = src[0], let y = src[1] { self?.better = whichIsBetter([x, y], [a, b]) } else { self?.comparePair = ComparePair(before: pair[0], beforeReport: a, after: pair[1], afterReport: b) }
+                if let x = src[0], let y = src[1] { self?.better = whichIsBetter([x, y], [a, b], dub: dub) } else { self?.comparePair = ComparePair(before: pair[0], beforeReport: a, after: pair[1], afterReport: b) }
+            }
+        }
+    }
+    /// Rimette a tempo il doppiaggio della copia italiana con l'originale dell'altra copia; il risultato si apre e si ricontrolla come ogni film.
+    func fixDub(_ urls: [URL], _ d: DubCheck) {
+        guard !compareBusy, let x = loadMergeSource(urls[0], src: 0), let y = loadMergeSource(urls[1], src: 1) else { return }
+        compareBusy = true; compareProgress = 0; compareStatus = "Rimetto a tempo il doppiaggio…"
+        q.async { [weak self] in
+            let r = retimeDubFromOther([x, y], d) { p, st in DispatchQueue.main.async { self?.compareProgress = p; self?.compareStatus = "Rimetto a tempo il doppiaggio\n\(st)" } }
+            DispatchQueue.main.async {
+                self?.compareBusy = false
+                let a = NSAlert(); a.messageText = r.ok ? "Doppiaggio rimesso a tempo" : "Doppiaggio non corretto"; a.informativeText = r.message + (r.lines.isEmpty ? "" : "\n\n" + r.lines.suffix(6).joined(separator: "\n")); a.runModal()
+                if let u = r.newURL { self?.add([u]) }
             }
         }
     }
@@ -210,7 +225,8 @@ struct ContentView: View {
         .frame(minWidth: 900, minHeight: 600)
         .overlay { if store.compareBusy { CompareBusyOverlay(store: store) } }
         .sheet(item: $store.better) { v in BetterView(v: v, sideBySide: { store.better = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.comparePair = ComparePair(before: v.urls[0], beforeReport: v.reports[0], after: v.urls[1], afterReport: v.reports[1]) } },
-                                                         merge: { store.better = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.mergeRequest = MergeRequest(urls: v.urls) } }) }
+                                                         merge: { store.better = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.mergeRequest = MergeRequest(urls: v.urls) } },
+                                                         fixDub: { store.better = nil; if let d = v.dub { store.fixDub(v.urls, d) } }) }
         .sheet(item: $store.comparePair) { pair in CompareView(pair: pair, swap: { store.comparePair = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.comparePair = pair.swapped } }) }
         .onDrop(of: [.fileURL], isTargeted: $hover) { ps in
             guard !store.compareBusy else { return false }

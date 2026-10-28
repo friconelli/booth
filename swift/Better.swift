@@ -5,7 +5,7 @@ import AppKit
 /// Un motivo del verdetto: chi vince (0 = primo film, 1 = secondo), quanto pesa e la frase da mostrare.
 struct BetterReason: Identifiable { let id = UUID(); var winner: Int; var weight: Double; var text: String }
 struct BetterVerdict: Identifiable {
-    let id = UUID(); var urls: [URL]; var reports: [Report]; var winner: Int?; var reasons: [BetterReason] = []; var facts: [[String]] = [[], []]
+    let id = UUID(); var urls: [URL]; var reports: [Report]; var winner: Int?; var reasons: [BetterReason] = []; var facts: [[String]] = [[], []]; var dub: DubCheck?   // dub: il doppiaggio della copia italiana misurato con l'originale dell'altra
     /// Una ha l'immagine migliore, l'altra l'audio italiano: la cosa migliore è unirle.
     var mergeHint: Bool { reasons.contains { $0.text.hasPrefix("Immagine") } && reasons.contains { $0.text.hasPrefix("Ha l'audio italiano") } && Set(reasons.filter { $0.text.hasPrefix("Immagine") || $0.text.hasPrefix("Ha l'audio italiano") }.map(\.winner)).count == 2 }
     var headline: String {
@@ -15,8 +15,8 @@ struct BetterVerdict: Identifiable {
 }
 
 /// Confronta due copie con i criteri della sala, in ordine di importanza: problemi indispensabili, audio italiano, immagine, sottotitoli italiani, qualità dell'audio, durata.
-func whichIsBetter(_ s: [MergeSource], _ r: [Report]) -> BetterVerdict {
-    var v = BetterVerdict(urls: s.map(\.url), reports: r)
+func whichIsBetter(_ s: [MergeSource], _ r: [Report], dub: DubCheck? = nil) -> BetterVerdict {
+    var v = BetterVerdict(urls: s.map(\.url), reports: r); v.dub = dub
     func add(_ a: Double, _ b: Double, _ weight: Double, _ text: (Int) -> String) {   // a e b: quanto vale ciascuna copia per quel criterio
         guard a != b else { return }; let w = a > b ? 0 : 1; v.reasons.append(BetterReason(winner: w, weight: weight, text: text(w)))
     }
@@ -74,13 +74,14 @@ func whichIsBetter(_ s: [MergeSource], _ r: [Report]) -> BetterVerdict {
         let su = s[i].tracks.filter { $0.kind == "s" }.map { langLabel($0.effLang) + ($0.forced ? " (forzati)" : "") }
         f.append("Sottotitoli: " + (su.isEmpty ? "nessuno" : su.joined(separator: ", ")))
         f.append("Durata: " + hms(r[i].duration) + " · " + r[i].verdict.lowercased())
+        if let d = dub, d.ita == i { f.append("Doppiaggio: " + d.summary) }
         v.facts[i] = f
     }
     return v
 }
 
 struct BetterView: View {
-    let v: BetterVerdict; var sideBySide: (() -> Void)?; var merge: (() -> Void)?; @Environment(\.dismiss) private var dismiss
+    let v: BetterVerdict; var sideBySide: (() -> Void)?; var merge: (() -> Void)?; var fixDub: (() -> Void)?; @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top) {
@@ -101,6 +102,11 @@ struct BetterView: View {
                 Text("Ancora meglio: unirle, con l'immagine di una e l'audio italiano dell'altra.").font(.callout)
                 Spacer(); if let m = merge { Button("Unisci le due copie…") { m() }.buttonStyle(.borderedProminent) }
             }.padding(10).background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.08))) }
+            if let d = v.dub, !d.ok { HStack(spacing: 10) {
+                Image(systemName: "waveform.badge.exclamationmark").foregroundStyle(.orange)
+                Text(String(format: "Il doppiaggio di «%@» non è a tempo con l'immagine: fuori tolleranza per %@ di film, fino a %.0f ms. Booth può rimetterlo a tempo usando come riferimento l'audio in %@ dell'altra copia: stessa immagine, stesso peso.", v.urls[d.ita].lastPathComponent, hms(d.badDur), abs(d.worst) * 1000, langLabel(d.refLang))).font(.callout)
+                Spacer(); if let f = fixDub { Button("Rimetti a tempo…") { f() }.buttonStyle(.borderedProminent) }
+            }.padding(10).background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.08))) }
             HStack(alignment: .top, spacing: 14) { ForEach(0..<2, id: \.self) { i in card(i) } }
             HStack {
                 if let s = sideBySide { Button("Guarda le immagini fianco a fianco…") { s() } }

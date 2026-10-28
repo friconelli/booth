@@ -307,6 +307,11 @@ try:
     ca = cutfilm("tagli_ita.mkv", mix(IT, ",asplit[x][y];[x]atrim=0:200,asetpts=PTS-STARTPTS[p];[y]atrim=200,asetpts=PTS-STARTPTS,adelay=120:all=1[q];[p][q]concat=n=2:v=0:a=1,atrim=0:" + str(DM)), "ita")
     rc, o = merge(ca, cb, "--video", "b", "--audio", "a0", "--align-only")
     check(rc == 0 and "Doppiaggio a gradini" in o and "le immagini delle due copie sono uguali" in o and "Montaggio diverso" not in o, "immagini uguali ai cambi di scarto: Booth dice che è il doppiaggio a gradini, non un montaggio diverso")
+    o = better(ca, cb)
+    check(o.startswith("MEGLIO: A") and "DOPPIAGGIO A FUORI SINCRONO" in o and "+120 ms" in o and "CONVIENE" not in o, "confronto: il doppiaggio della copia solo italiana misurato con l'inglese dell'altra copia, 120 ms fuori dopo 3:20")
+    cf = os.path.join(T, "tagli_ita_a_tempo.mkv"); r = subprocess.run([BIN, "--dub-from", ca, cb, "--output", cf], capture_output=True, text=True)
+    check(r.returncode == 0 and os.path.exists(cf) and [s["codec_type"] for s in probe(cf)["streams"]] == ["video", "audio"] and all(abs(sync(cf, t)) < 0.03 for t in (100, 300)),
+          f"doppiaggio rimesso a tempo con l'originale dell'altra copia, tenendo l'immagine e il peso della copia italiana ({sync(cf, 300) * 1000 if os.path.exists(cf) else 0:+.0f} ms a 5:00)")
     other = film("altro_film.mkv", "640x360", "24000/1001", f"anoisesrc=d={DM}:c=brown:a=0.5:r=48000,{gate(55.55, 6)},aformat=channel_layouts=stereo", "ita", DM)
     rc, o = merge(best, other, "--audio", "b0", "--output", os.path.join(T, "altro.mkv"))
     check(rc != 0 and "NON ALLINEATO" in o and not os.path.exists(os.path.join(T, "altro.mkv")), "film diverso: unione rifiutata, nessun file creato")

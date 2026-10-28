@@ -38,12 +38,21 @@ if let f = arg("--prepare").first {   // «Prepara per la sala»: --prepare FILE
     let r = prepareForScreening(URL(fileURLWithPath: f), output: arg("--output").first.map { URL(fileURLWithPath: $0) }) { p, s in FileHandle.standardError.write(Data(String(format: "\r%3.0f%% %@                    ", p * 100, s).utf8)) }
     FileHandle.standardError.write(Data("\n".utf8)); print((r.ok ? "OK: " : "ERRORE: ") + r.message); r.lines.forEach { print("  " + $0) }; exit(r.ok ? 0 : 1)
 }
+if let i = CommandLine.arguments.firstIndex(of: "--dub-from"), i + 2 < CommandLine.arguments.count {   // doppiaggio di una copia rimesso a tempo con l'originale dell'altra: --dub-from A B [--output P]
+    let u = [CommandLine.arguments[i + 1], CommandLine.arguments[i + 2]].map { URL(fileURLWithPath: $0) }
+    guard let a = loadMergeSource(u[0], src: 0), let b = loadMergeSource(u[1], src: 1) else { print("ERRORE: file illeggibile"); exit(1) }
+    guard let d = dubCheckBetween([a, b]) else { print("ERRORE: doppiaggio non misurabile con l'altra copia"); exit(1) }
+    print("PRIMA: " + d.summary)
+    let r = retimeDubFromOther([a, b], d, output: arg("--output").first.map { URL(fileURLWithPath: $0) }) { p, s in FileHandle.standardError.write(Data(String(format: "\r%3.0f%% %@                    ", p * 100, s).utf8)) }
+    FileHandle.standardError.write(Data("\n".utf8)); print((r.ok ? "OK: " : "ERRORE: ") + r.message); r.lines.forEach { print("  " + $0) }; exit(r.ok ? 0 : 1)
+}
 if let i = CommandLine.arguments.firstIndex(of: "--better"), i + 2 < CommandLine.arguments.count {   // quale delle due copie è meglio: --better A B
     let u = [CommandLine.arguments[i + 1], CommandLine.arguments[i + 2]].map { URL(fileURLWithPath: $0) }
     guard let a = loadMergeSource(u[0], src: 0), let b = loadMergeSource(u[1], src: 1) else { print("ERRORE: file illeggibile"); exit(1) }
-    let v = whichIsBetter([a, b], u.map { analyze($0) })
+    let v = whichIsBetter([a, b], u.map { analyze($0) }, dub: CommandLine.arguments.contains("--no-dub") ? nil : dubCheckBetween([a, b]))
     print(v.winner.map { "MEGLIO: \($0 == 0 ? "A" : "B") \(u[$0].lastPathComponent)" } ?? "PARI")
     if v.mergeHint { print("CONVIENE UNIRLE") }
+    if let d = v.dub { print("DOPPIAGGIO \(d.ita == 0 ? "A" : "B")\(d.ok ? "" : " FUORI SINCRONO"): \(d.summary)" + String(format: " · immagini spostate di %+.3f s", d.picture)) }
     for r in v.reasons { print("\(r.winner == 0 ? "A" : "B") +\(Int(r.weight)): \(r.text)") }
     exit(0)
 }

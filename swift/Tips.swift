@@ -151,3 +151,95 @@ func refineFindings(_ fs: inout [Finding], _ f: [String: Double], _ r: Report) {
         }
     }
 }
+
+// MARK: doppiaggio di una copia misurato con l'originale di un'altra copia
+/// Quando solo una delle due copie ha l'italiano (e nessuna traccia originale con cui confrontarlo), l'audio originale dell'altra copia fa da riferimento:
+/// musica ed effetti sono gli stessi, e i tagli d'inquadratura dicono di quanto sono spostate le due immagini.
+struct DubCheck {
+    var ita: Int, dub: Int, ref: Int, refLang: String   // copia con il doppiaggio, sua traccia italiana, traccia originale dell'altra copia
+    var picture: Double                                  // l'immagine dell'altra copia a t + picture è quella di questa copia a t
+    var late: [MergeSegment]                             // sul tempo della copia italiana: quanto il doppiaggio arriva dopo la sua immagine (negativo = prima)
+    var badDur: Double { late.filter { ($0.d ?? 0) > syncLateTol || ($0.d ?? 0) < -syncEarlyTol }.reduce(0) { $0 + $1.end - $1.start } }
+    var worst: Double { late.compactMap(\.d).max { abs($0) < abs($1) } ?? 0 }
+    var ok: Bool { badDur <= 60 }
+    var summary: String {
+        let parts = late.filter { $0.d != nil }, ds = parts.compactMap(\.d), lo = ds.min() ?? 0, hi = ds.max() ?? 0
+        if lo > -0.02 && hi < 0.02 { return "a tempo con l'immagine (entro 20 ms, misurato con l'audio in \(langLabel(refLang)) dell'altra copia)" }
+        return String(format: "da %+.0f a %+.0f ms rispetto all'immagine in %d tratti (+ = in ritardo; misurato con l'audio in %@ dell'altra copia)", lo * 1000, hi * 1000, parts.count, langLabel(refLang))
+    }
+}
+
+func dubCheckBetween(_ s: [MergeSource], progress: @escaping (Double, String) -> Void = { _, _ in }) -> DubCheck? {
+    let has = s.map { $0.tracks.contains { $0.kind == "a" && $0.isItalian } }
+    guard has[0] != has[1] else { return nil }
+    let w = has[0] ? 0 : 1, o = 1 - w
+    // se la copia italiana ha anche l'originale, il controllo del film l'ha già misurato nel suo file
+    guard !s[w].tracks.contains(where: { $0.kind == "a" && !$0.isItalian && !$0.effLang.isEmpty }) else { return nil }
+    guard let dub = s[w].tracks.filter({ $0.kind == "a" && $0.isItalian }).max(by: { audioScore($0) < audioScore($1) }),
+          let ref = s[o].tracks.filter({ $0.kind == "a" && !$0.isItalian }).max(by: { $0.channels < $1.channels }),
+          let vw = s[w].video, let vo = s[o].video, vw.duration > 300, vw.fps > 0, abs(vw.fps / vo.fps - 1) < 0.001 else { return nil }   // velocità diverse: ci pensa l'unione
+    let dur = s[w].probe.duration
+    var ed: [Float] = [], er: [Float] = []; let g = DispatchGroup()
+    g.enter(); DispatchQueue.global().async { ed = fullEnvelope(s[w].url.path, track: dub.ord, duration: dur) { progress(0.4 * $0, "Leggo il doppiaggio…") }; g.leave() }
+    g.enter(); DispatchQueue.global().async { er = fullEnvelope(s[o].url.path, track: ref.ord, duration: s[o].probe.duration); g.leave() }
+    g.wait()
+    progress(0.45, "Confronto il doppiaggio con l'audio originale dell'altra copia…")
+    let r = segmentAlignment(ed, er, vDur: dur)   // l'originale dell'altra copia a t + d corrisponde al doppiaggio a t
+    guard r.why == nil, r.drift == nil, !r.segments.isEmpty else { return nil }
+    func dAt(_ t: Double) -> Double? { r.segments.last { $0.start <= t }?.d }
+    // scarto delle immagini dai tagli d'inquadratura, in cinque punti del film
+    progress(0.6, "Guardo le immagini delle due copie…")
+    var pics: [Double] = []; let lock = NSLock(), q = OperationQueue(); q.maxConcurrentOperationCount = 4
+    for f in [0.15, 0.32, 0.5, 0.68, 0.85] {
+        let t = f * dur; guard let d = dAt(t) else { continue }
+        q.addOperation {
+            let bc = sceneCuts(s[w].url.path, from: t - 12, len: 24), ac = sceneCuts(s[o].url.path, from: t + d - 13, len: 26)
+            if let p = cutOffset(bc, ac, near: [d - 0.25, d, d + 0.25]) { lock.lock(); pics.append(p); lock.unlock() }
+        }
+    }
+    q.waitUntilAllOperationsAreFinished()
+    pics.sort()
+    guard pics.count >= 3, pics.last! - pics.first! < 0.045 else { return nil }   // immagini non confrontabili o montaggi diversi: niente verdetto
+    let pic = pics[pics.count / 2]
+    progress(1, "Fatto")
+    // l'originale è a tempo con la sua immagine: il doppiaggio a t corrisponde all'immagine dell'altra copia a t + d, cioè a questa a t + d − pic
+    let late = r.segments.map { sg -> MergeSegment in var x = sg; x.d = sg.d.map { pic - $0 }; return x }
+    return DubCheck(ita: w, dub: dub.ord, ref: ref.ord, refLang: ref.effLang, picture: pic, late: late)
+}
+
+/// Rimette a tempo il doppiaggio della copia italiana prendendo come riferimento l'audio originale dell'altra copia, spostato sulla sua immagine.
+/// Il risultato è la copia italiana (stessa immagine, stesso peso) con il doppiaggio ricostruito; la verifica è quella delle correzioni normali.
+func retimeDubFromOther(_ s: [MergeSource], _ c: DubCheck, output: URL? = nil, progress: @escaping (Double, String) -> Void = { _, _ in }) -> FixResult {
+    guard let ff = tool("ffmpeg") else { return FixResult(ok: false, message: "ffmpeg non trovato.") }
+    let W = s[c.ita], O = s[1 - c.ita]
+    let out = output ?? W.url.deletingLastPathComponent().appendingPathComponent(W.url.deletingPathExtension().lastPathComponent + " (corretto).mkv")
+    let dir = out.deletingLastPathComponent()
+    if let free = (try? dir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage, Double(free) < W.probe.size * 3.2 + 5e8 { return FixResult(ok: false, message: "Spazio insufficiente: servono circa \(fmtBytes(W.probe.size * 3.2)) liberi.") }
+    let work = dir.appendingPathComponent(".booth-dub-\(UUID().uuidString.prefix(8))"); try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: work) }
+    // 1) l'originale dell'altra copia sul tempo di questa (solo come riferimento: mono, senza perdite)
+    progress(0.02, "Porto l'audio originale dell'altra copia sul tempo di questa…")
+    let ref = work.appendingPathComponent("ref.mka")
+    var a = ["-nostdin", "-y", "-v", "error"] + (c.picture > 0 ? ["-ss", String(format: "%.4f", c.picture)] : []) + ["-i", O.url.path, "-map", "0:a:\(c.ref)", "-vn", "-ac", "1", "-ar", "16000"]
+    a += ["-af", "aresample=async=1:first_pts=0" + (c.picture < 0 ? String(format: ",adelay=%.0f:all=1", -c.picture * 1000) : ""), "-t", String(format: "%.3f", W.probe.duration), "-c:a", "flac", "-metadata:s:a:0", "language=\(c.refLang)", ref.path]
+    guard run(ff, a).status == 0 else { return FixResult(ok: false, message: "Non riesco a leggere l'audio originale dell'altra copia.") }
+    // 2) copia di lavoro: questa copia più il riferimento come ultima traccia audio
+    progress(0.06, "Preparo la copia di lavoro…")
+    let tmp = work.appendingPathComponent("lavoro.mkv"), refIdx = W.probe.audio.count
+    guard run(ff, ["-nostdin", "-y", "-v", "error", "-i", W.url.path, "-i", ref.path, "-map", "0", "-map", "1:a", "-c", "copy", tmp.path]).status == 0 else { return FixResult(ok: false, message: "Non riesco a preparare la copia di lavoro.") }
+    // 3) la correzione normale (misura, ricostruzione, verifica di sincronia e volume) sulla copia di lavoro
+    var plan = FixPlan(); plan.retimeDub[c.dub] = refIdx
+    let fixed = work.appendingPathComponent("corretto.mkv")
+    var r = applyFix(tmp, plan, output: fixed) { v, st in progress(0.08 + 0.85 * v, st) }
+    let refName = "l'audio in \(langLabel(c.refLang)) di «\(O.url.lastPathComponent)»"
+    r.lines = r.lines.map { $0.replacingOccurrences(of: "sulla traccia \(refIdx + 1)", with: "sull'audio in \(langLabel(c.refLang)) dell'altra copia").replacingOccurrences(of: "rispetto alla traccia \(refIdx + 1)", with: "rispetto all'audio in \(langLabel(c.refLang)) dell'altra copia") }
+    guard r.ok else { r.message = r.message.replacingOccurrences(of: "Il file non è stato toccato.", with: "La copia non è stata toccata."); return r }
+    // 4) tolto il riferimento, resta la copia italiana con il doppiaggio a tempo
+    progress(0.95, "Tolgo la traccia di riferimento…")
+    guard run(ff, ["-nostdin", "-y", "-v", "error", "-i", fixed.path, "-map", "0", "-map", "-0:a:\(refIdx)", "-map_chapters", "0", "-map_metadata", "0", "-c", "copy", out.path]).status == 0,
+          let np = Probe(out.path), np.audio.count == W.probe.audio.count, abs(np.duration - W.probe.duration) < 2 else {
+        try? FileManager.default.removeItem(at: out); return FixResult(ok: false, message: "Non riesco a scrivere la copia corretta.", lines: r.lines)
+    }
+    progress(1, "Fatto")
+    return FixResult(ok: true, message: "Doppiaggio rimesso a tempo: «\(out.lastPathComponent)», con l'immagine di «\(W.url.lastPathComponent)» (\(fmtBytes(np.size))). Le due copie non sono state toccate.", lines: ["Riferimento: \(refName), spostato di \(String(format: "%+.3f", -c.picture)) s sull'immagine di questa copia"] + r.lines, newURL: out)
+}
