@@ -34,6 +34,10 @@ if let i = CommandLine.arguments.firstIndex(of: "--dub-check"), i + 4 < CommandL
     print("CORREZIONE"); show(segs); print("RESIDUO"); show(res)
     exit(0)
 }
+if let f = arg("--prepare").first {   // «Prepara per la sala»: --prepare FILE [--output PATH]
+    let r = prepareForScreening(URL(fileURLWithPath: f), output: arg("--output").first.map { URL(fileURLWithPath: $0) }) { p, s in FileHandle.standardError.write(Data(String(format: "\r%3.0f%% %@                    ", p * 100, s).utf8)) }
+    FileHandle.standardError.write(Data("\n".utf8)); print((r.ok ? "OK: " : "ERRORE: ") + r.message); r.lines.forEach { print("  " + $0) }; exit(r.ok ? 0 : 1)
+}
 if let i = CommandLine.arguments.firstIndex(of: "--better"), i + 2 < CommandLine.arguments.count {   // quale delle due copie è meglio: --better A B
     let u = [CommandLine.arguments[i + 1], CommandLine.arguments[i + 2]].map { URL(fileURLWithPath: $0) }
     guard let a = loadMergeSource(u[0], src: 0), let b = loadMergeSource(u[1], src: 1) else { print("ERRORE: file illeggibile"); exit(1) }

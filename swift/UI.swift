@@ -79,6 +79,46 @@ final class Store: ObservableObject {
             }
         }
     }
+    /// «Prepara per la sala»: mostra le correzioni che servono e quello che resta da fare a mano, poi corregge, rianalizza il film nuovo, lo scarta se è peggiorato
+    /// e scrive accanto la scheda per la sala.
+    func prepare(_ j: Job) {
+        guard let rep = j.report, j.fixProgress == nil else { return }
+        let pp = preparePlan(rep), lines = pp.plan.summary(rep), manual = pp.unresolved.map { "• " + splitTitle($0.title).0 }
+        let a = NSAlert()
+        if lines.isEmpty {
+            a.messageText = pp.unresolved.isEmpty ? "Il film è già pronto per la sala" : "Booth da solo non può sistemare questo film"
+            a.informativeText = (pp.unresolved.isEmpty ? "Non c'è niente da correggere. Salvo accanto al film la scheda con i consigli per la proiezione?" : "Da risolvere a mano o con un'altra copia («Unisci»):\n" + manual.joined(separator: "\n") + "\n\nSalvo comunque la scheda accanto al film?")
+            a.addButton(withTitle: "Salva la scheda"); a.addButton(withTitle: "Annulla")
+            if a.runModal() == .alertFirstButtonReturn, let u = writeScreeningSheet(rep, done: [], original: j.origURL) { NSWorkspace.shared.activateFileViewerSelecting([u]) }
+            return
+        }
+        let editing = j.hasCorrected, output = editing ? j.url : correctedURL(for: j.url)
+        a.messageText = "Preparare il film per la sala?"
+        a.informativeText = lines.map { "• " + $0 }.joined(separator: "\n") + (manual.isEmpty ? "" : "\n\nDa risolvere a mano o con un'altra copia:\n" + manual.joined(separator: "\n"))
+            + "\n\n" + (editing ? "La copia corretta verrà aggiornata." : "Verrà creata «\(output.lastPathComponent)» accanto al film.") + " Poi Booth la ricontrolla da capo: se qualcosa peggiora la scarta. Accanto al film salva la scheda per la sala. L'originale non viene mai modificato."
+        a.addButton(withTitle: "Prepara"); a.addButton(withTitle: "Annulla"); guard a.runModal() == .alertFirstButtonReturn else { return }
+        let source = j.url, orig = j.origURL ?? j.url, origReport = j.origReport ?? rep
+        j.fixProgress = 0; j.fixStage = "In attesa…"; j.fixResult = nil
+        q.async {
+            var r = applyFix(source, pp.plan, output: output) { v, s in DispatchQueue.main.async { j.fixProgress = v * 0.8; j.fixStage = s } }
+            var after: Report?
+            if r.ok {
+                DispatchQueue.main.async { j.fixStage = "Ricontrollo il film corretto…" }
+                let ar = analyze(output) { v, _ in DispatchQueue.main.async { j.fixProgress = 0.8 + v * 0.2 } }
+                if let why = checkPrepared(before: rep, after: ar, fixLines: r.lines) {
+                    if !editing { try? FileManager.default.trashItem(at: output, resultingItemURL: nil) }
+                    r = FixResult(ok: false, message: "Preparazione annullata: \(why). " + (editing ? "" : "La copia è nel Cestino; ") + "l'originale non è stato toccato.", lines: r.lines)
+                } else {
+                    after = ar; let sheet = writeScreeningSheet(ar, done: lines, original: orig)
+                    r.message = (ar.essential.isEmpty ? "Pronto per la sala." : "Migliorato, ma resta qualcosa da guardare.") + (sheet.map { " Scheda salvata: «\($0.lastPathComponent)»." } ?? "") + " L'originale non è stato toccato."
+                }
+            }
+            DispatchQueue.main.async {
+                if r.ok, let ar = after { if j.origURL == nil { j.origURL = orig; j.origReport = origReport }; j.url = output; j.fixLog += r.lines; j.report = ar; setVerdictTag(output, ok: ar.essential.isEmpty) }
+                j.fixResult = r; j.fixProgress = nil
+            }
+        }
+    }
     /// Mostra tutto quello che verrà fatto e applica solo dopo il consenso (Correggi / Altre opzioni… / Annulla).
     func confirmFix(_ j: Job, _ plan: FixPlan, more: @escaping () -> Void) {
         guard let rep = j.report else { return }

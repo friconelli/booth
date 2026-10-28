@@ -140,7 +140,7 @@ struct JobDetail: View {
     func summary(_ r: Report, _ items: [FixItem], _ todo: [Finding]) -> some View {
         let eItems = items.filter(\.essential), pItems = items.filter { !$0.essential }
         let eTodo = todo.filter { isEssential($0) }, pTodo = r.visible.filter { $0.fixes.isEmpty && $0.sev >= .warn && !isEssential($0) }
-        let safeE = eItems.flatMap { $0.hints }.filter { !isHeavy($0) }, safeP = pItems.flatMap { $0.hints }.filter { !isHeavy($0) }
+        let safeP = pItems.flatMap { $0.hints }.filter { !isHeavy($0) }
         let nE = eItems.count + eTodo.count, nP = pItems.count + pTodo.count
         return VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 14) {
@@ -150,9 +150,8 @@ struct JobDetail: View {
                     Text(nE == 0 ? (nP > 0 ? (nP == 1 ? "Nessun problema indispensabile. C'è una miglioria facoltativa." : "Nessun problema indispensabile. Ci sono \(nP) migliorie facoltative.") : "Non ho trovato problemi.") : (nP > 0 ? (nP == 1 ? "Più una miglioria facoltativa, qui sotto." : "Più \(nP) migliorie facoltative, qui sotto.") : "Prima di fare qualsiasi cosa ti mostro cosa cambia.")).font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if eItems.filter({ $0.hints.allSatisfy { !isHeavy($0) } }).count >= 2 {
-                    Button { store.confirmFix(job, plan(safeE)) { sheetPlan = plan(safeE) } } label: { Label("Sistema tutto", systemImage: "wand.and.stars").font(.headline).padding(.horizontal, 6).padding(.vertical, 3) }.buttonStyle(.borderedProminent).controlSize(.large).disabled(job.fixProgress != nil)
-                }
+                Button { store.prepare(job) } label: { Label(nE == 0 ? "Scheda per la sala" : "Prepara per la sala", systemImage: nE == 0 ? "doc.text" : "wand.and.stars").font(.headline).padding(.horizontal, 6).padding(.vertical, 3) }
+                    .buttonStyle(.borderedProminent).controlSize(.large).disabled(job.fixProgress != nil).help("Corregge quello che serve per la proiezione, ricontrolla il film corretto e salva accanto la scheda per la sala")
             }
             if nE > 0 { VStack(spacing: 8) { ForEach(eItems) { fixRow($0) }; ForEach(eTodo) { manualRow($0) } } }
             if !r.tips.isEmpty { tipsCard(r.tips) }

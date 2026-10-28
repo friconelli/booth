@@ -289,6 +289,9 @@ try:
     check("Il doppiaggio non è a tempo con l'originale" in a and "in ritardo di 120 ms" in a and "INDISPENSABILE" in a, "controllo del film: doppiaggio confrontato con l'inglese dello stesso file, 120 ms di ritardo dopo 3:20 segnalati")
     rc, o = fixcopy(dub, "--retime-dub", "0:1"); dc = os.path.join(T, "doppiata (corretto).mkv")
     check(rc == 0 and "doppiaggio rimesso a tempo" in o and os.path.exists(dc) and "a tempo con la traccia in inglese" in analyze(dc) and abs(sync(dc, 300)) < 0.03, f"doppiaggio a gradini rimesso a tempo sull'inglese dello stesso file, senza una seconda copia ({sync(dc, 300) * 1000 if os.path.exists(dc) else 0:+.0f} ms a 5:00)")
+    pr_out = os.path.join(T, "sala.mkv"); r = subprocess.run([BIN, "--prepare", dub, "--output", pr_out], capture_output=True, text=True); sheet = os.path.join(T, "sala — scheda per la sala.txt")
+    check(r.returncode == 0 and "Pronto per la sala" in r.stdout and os.path.exists(pr_out) and os.path.exists(sheet) and "COSA HA FATTO BOOTH" in open(sheet).read() and "Rimettere a tempo il doppiaggio" in open(sheet).read() and "Il doppiaggio non è a tempo" not in analyze(pr_out),
+          "«Prepara per la sala»: corregge il doppiaggio, ricontrolla il film nuovo e salva la scheda accanto")
     a = analyze(best)
     check("CONSIGLI PER LA PROIEZIONE" in a and "• Volume:" in a and "• Collegamento audio:" in a and "doppiaggio" not in a, "controllo del film: consigli per la proiezione (punto dove regolare il volume, collegamento audio)")
     # due copie con lo stesso montaggio (tagli d'inquadratura allo stesso posto) ma il doppiaggio dell'una a gradini: non è un montaggio diverso
