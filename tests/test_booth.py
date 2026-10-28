@@ -232,6 +232,9 @@ try:
     check(o1.startswith("MEGLIO: B") and o2.startswith("MEGLIO: A") and "audio italiano" in o1 and "CONVIENE UNIRLE" in o1, "audio italiano batte l'immagine migliore, in qualunque ordine, e propone di unirle")
     o = better(sd_it2, hd_it); check(o.startswith("MEGLIO: B") and "1920×1080" in o and "5.1" in o and "CONVIENE" not in o and "minuti" not in o, "stessa lingua: vince l'immagine e l'audio 5.1, durata PAL non scambiata per scene mancanti")
     check(better(hd_it, hd_it).startswith("PARI"), "due copie uguali: pari")
+    uhd_en = os.path.join(T, "uhd_en.mkv")
+    ff("-f", "lavfi", "-i", "testsrc2=s=3840x2160:r=24000/1001:d=40", "-f", "lavfi", "-i", "sine=f=440:d=40", "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "30M", "-c:a", "aac", "-ac", "2", "-metadata:s:a:0", "language=eng", uhd_en)
+    o = better(uhd_en, hd_it); check(o.startswith("MEGLIO: B") and "CONVIENE" not in o and "si equivalgono" in o, "4K contro un buon 1080p italiano: sul proiettore 1920×1200 si equivalgono, si tiene il 1080p e non si uniscono")
     print("== unione di due copie")
     DM = 400
     def gate(seed, rate=7, dens=0.35): return f"volume='if(lt(abs(mod(sin(floor(t*{rate})*{seed})*43758.5453,1)),{dens}),1,0.03)':eval=frame"

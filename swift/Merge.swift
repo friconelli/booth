@@ -44,6 +44,20 @@ struct VideoInfo {
         return n
     }
 }
+/// Quanto rende ogni codec a parità di bitrate, rispetto all'H.264.
+let codecEfficiency: [String: Double] = ["av1": 2.0, "hevc": 1.6, "vp9": 1.5, "h264": 1.0, "vc1": 0.8, "mpeg4": 0.6, "mpeg2video": 0.5, "msmpeg4v3": 0.5]
+/// Quanto è buona l'immagine sul proiettore della sala, non in assoluto: oltre 1920×1200 e oltre un bitrate «pieno» per i pixel che il proiettore mostra
+/// non si vede nessuna differenza. Se l'analisi ha misurato l'immagine pulita (blocchettatura e nitidezza nella norma) conta come piena.
+func screenScore(_ v: VideoInfo, block: Double? = nil, blur: Double? = nil) -> Double {
+    let sc = min(1, Double(Projector.w) / Double(max(v.w, 1)), Double(Projector.h) / Double(max(v.h, 1))), pw = Double(v.w) * sc, ph = Double(v.h) * sc
+    let tier = Double(pw >= 1700 ? 3 : pw >= 1100 ? 2 : 1)
+    let bpp = v.fps > 0 ? v.bitrate * (codecEfficiency[v.codec] ?? 0.7) / (pw * ph * v.fps) : 0
+    var clean = min(1, bpp / 0.06)
+    if let b = block, b <= 2.5, (blur ?? 0) <= 8 { clean = max(clean, 0.8) } else if let b = block, b > 4 { clean = min(clean, 0.3) }
+    return tier * 1000 + clean * 300 - (v.interlaced ? 400 : 0) - (v.dv5 ? 3000 : 0) - (v.hdr.isEmpty ? 0 : 60)   // HDR: sul proiettore va convertito, un passaggio in più
+}
+/// Differenza minima di `screenScore` che sul proiettore si vede davvero.
+let visibleScreenGap = 120.0
 func videoInfo(_ pr: Probe) -> VideoInfo? {
     guard let v = pr.video else { return nil }
     var i = VideoInfo(); let tg = tags(v)
@@ -56,8 +70,7 @@ func videoInfo(_ pr: Probe) -> VideoInfo? {
     i.interlaced = ["tt", "bb", "tb", "bt"].contains((v["field_order"] as? String) ?? "")
     let audioBits = pr.audio.reduce(0.0) { $0 + (dbl($1["bit_rate"]) ?? dbl(tags($1)["bps"]) ?? dbl(tags($1)["bps-eng"]) ?? 0) }
     i.bitrate = dbl(v["bit_rate"]) ?? dbl(tg["bps"]) ?? dbl(tg["bps-eng"]) ?? (pr.duration > 0 ? max(0, pr.size * 8 / pr.duration - audioBits) : 0)
-    let eff: [String: Double] = ["av1": 2.0, "hevc": 1.6, "vp9": 1.5, "h264": 1.0, "vc1": 0.8, "mpeg4": 0.6, "mpeg2video": 0.5, "msmpeg4v3": 0.5]
-    let effective = i.bitrate * (eff[i.codec] ?? 0.7)
+    let effective = i.bitrate * (codecEfficiency[i.codec] ?? 0.7)
     // il proiettore mostra al massimo 1920×1200: un 4K vale come un 1080p (il bitrate più alto conta lo stesso, sotto, perché ridotto a 1920 è più pulito)
     var tier = Double(i.w >= 1700 ? 3 : i.w >= 1100 ? 2 : 1)
     if tier > 1, i.fps > 0, effective / (Double(i.w * i.h) * i.fps) < 0.02 { tier -= 1 }   // risoluzione alta ma bitrate da fame: vale quanto quella sotto
@@ -75,8 +88,13 @@ func loadMergeSource(_ u: URL, src: Int) -> MergeSource? { guard let p = Probe(u
 
 /// La scelta proposta: l'immagine migliore, la traccia italiana migliore (a parità, quella che sta già con l'immagine: niente allineamento), i sottotitoli italiani del file con l'immagine.
 func autoSelect(_ s: [MergeSource]) -> (video: Int, audio: [String], subs: [String], def: String?) {
-    let video = (s[1].video?.score ?? -1e9) > (s[0].video?.score ?? -1e9) ? 1 : 0
+    // l'immagine dell'altra copia conta solo se sul proiettore si vede meglio; altrimenti si tiene quella che ha già l'audio italiano (niente unione) o la più leggera
     let ita = (s[0].tracks + s[1].tracks).filter { $0.kind == "a" && $0.isItalian }
+    let sc = s.map { $0.video.map { screenScore($0) } ?? -1e9 }
+    let video: Int
+    if abs(sc[0] - sc[1]) > visibleScreenGap { video = sc[1] > sc[0] ? 1 : 0 }
+    else if Set(ita.map(\.src)).count == 1, let only = ita.first?.src { video = only }
+    else { video = s[1].probe.size < s[0].probe.size ? 1 : 0 }
     let best = ita.max { audioScore($0) + ($0.src == video ? 0.6 : 0) < audioScore($1) + ($1.src == video ? 0.6 : 0) }
     var subs = s[video].tracks.filter { $0.kind == "s" && $0.isItalian }
     if subs.isEmpty { subs = s[1 - video].tracks.filter { $0.kind == "s" && $0.isItalian } }

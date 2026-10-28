@@ -58,7 +58,7 @@ func analyze(_ url: URL, progress: @escaping (Double, String) -> Void = { _, _ i
     g.wait()
 
     rep.meta = foundMeta; rep.findings = col.findings; rep.tech = col.sections; rep.seconds = Date().timeIntervalSince(t0)
-    let facts = col.facts; refineFindings(&rep.findings, facts, rep); rep.tips = projectionTips(rep, facts)
+    let facts = col.facts; rep.facts = facts; refineFindings(&rep.findings, facts, rep); rep.tips = projectionTips(rep, facts)
     if rep.findings.allSatisfy({ $0.sev <= .info }) { rep.findings.append(Finding(sev: .ok, area: "File", title: "Nessun problema rilevato", detail: "", time: nil, thumb: nil)) }
     return rep
 }

@@ -36,7 +36,7 @@ func isEssential(_ f: Finding) -> Bool {
 struct Tip: Identifiable { let id = UUID(); var icon: String; var title: String; var text: String }
 
 struct Report {
-    var tips: [Tip] = []
+    var tips: [Tip] = []; var facts: [String: Double] = [:]   // misure numeriche dell'analisi (per i consigli e il confronto)
     var file: URL; var duration = 0.0; var findings: [Finding] = []; var tech: [Section] = []; var seconds = 0.0; var audioTracks: [TrackInfo] = []; var subTracks: [TrackInfo] = []; var meta: MovieMeta?
     var ignored: [Finding] { let d = Dismissals.get(file); return findings.filter { $0.sev > .ok && d.contains($0.sig) } }   // verificate a mano dall'utente
     var visible: [Finding] { let d = Dismissals.get(file); return findings.filter { !d.contains($0.sig) } }

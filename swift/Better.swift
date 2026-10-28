@@ -34,10 +34,14 @@ func whichIsBetter(_ s: [MergeSource], _ r: [Report]) -> BetterVerdict {
     add(ita[0].isEmpty ? 0 : 1, ita[1].isEmpty ? 0 : 1, 800) { _ in "Ha l'audio italiano, l'altra no" }
     // immagine
     if let a = s[0].video, let b = s[1].video {
-        let d = abs(a.score - b.score)
-        if d > 40 { add(a.score, b.score, min(600, d * 0.4)) { w in
+        let sa = screenScore(a, block: r[0].facts["v.block"], blur: r[0].facts["v.blur"]), sb = screenScore(b, block: r[1].facts["v.block"], blur: r[1].facts["v.blur"]), d = abs(sa - sb)
+        if d <= visibleScreenGap {   // sul proiettore si equivalgono: meglio la più leggera
+            let za = s[0].probe.size, zb = s[1].probe.size
+            if max(za, zb) > min(za, zb) * 1.2 { add(-za, -zb, 40) { w in "Sul proiettore (\(Projector.label)) le due immagini si equivalgono, e questa è più leggera: \(fmtBytes(w == 0 ? za : zb)) contro \(fmtBytes(w == 0 ? zb : za))" } }
+        }
+        else { add(sa, sb, min(600, d * 0.4)) { w in
             let x = w == 0 ? a : b, y = w == 0 ? b : a
-            var t = "Immagine migliore: \(x.w)×\(x.h) \(x.codec.uppercased())" + (x.bitrate > 0 ? " a \(fmtRate(x.bitrate))" : "") + " contro \(y.w)×\(y.h) \(y.codec.uppercased())" + (y.bitrate > 0 ? " a \(fmtRate(y.bitrate))" : "")
+            var t = "Immagine migliore sul proiettore: \(x.w)×\(x.h) \(x.codec.uppercased())" + (x.bitrate > 0 ? " a \(fmtRate(x.bitrate))" : "") + " contro \(y.w)×\(y.h) \(y.codec.uppercased())" + (y.bitrate > 0 ? " a \(fmtRate(y.bitrate))" : "")
             if x.w > Projector.w { t += " (sul proiettore, \(Projector.w)×\(Projector.h), il \(x.w >= 3000 ? "4K" : "file") si vede come un 1080p molto pulito, non di più)" }
             if y.dv5 { t += "; l'altra è Dolby Vision 5 (colori sbagliati senza un lettore apposito)" } else if y.interlaced { t += "; l'altra è interlacciata" }
             return t } }
