@@ -3,6 +3,40 @@ import Foundation
 /// Tolleranza della sincronia labiale (EBU R37): l'audio può arrivare fino a 40 ms prima dell'immagine e fino a 60 ms dopo senza che il pubblico se ne accorga.
 let syncEarlyTol = 0.040, syncLateTol = 0.060
 
+/// Parti a scarto costante del doppiaggio `dub` rispetto alla traccia `ref` dello stesso file (d > 0: il doppiaggio arriva dopo). Nil se non si possono confrontare.
+func dubSegments(_ path: String, dub: Int, ref: Int, duration: Double, progress: @escaping (Double) -> Void = { _ in }) -> [MergeSegment]? {
+    var er: [Float] = [], ed: [Float] = []; let g = DispatchGroup()
+    g.enter(); DispatchQueue.global().async { er = fullEnvelope(path, track: ref, duration: duration) { progress($0) }; g.leave() }
+    g.enter(); DispatchQueue.global().async { ed = fullEnvelope(path, track: dub, duration: duration); g.leave() }
+    g.wait()
+    let r = segmentAlignment(er, ed, vDur: duration, maxSearch: 1)   // nello stesso file un doppiaggio non salta di secondi
+    return r.why == nil && r.drift == nil && !r.segments.isEmpty ? r.segments : nil
+}
+
+/// Ricostruisce il doppiaggio `dub` a tempo con la traccia `ref` dello stesso file e lo scrive (FLAC) in `out`. I confini tra i gradini si trovano con
+/// qualche secondo di incertezza: dopo ogni ricostruzione si rimisura quello che resta e lo si compone con le parti già trovate, fino a 4 volte.
+/// Restituisce le parti finali e lo scarto residuo (nil se non si riesce a misurare).
+func retimeDubTrack(_ src: MergeSource, dub: Int, ref: Int, out: URL, progress: @escaping (Double, String) -> Void = { _, _ in }) -> (segs: [MergeSegment], residual: [MergeSegment])? {
+    guard let ff = tool("ffmpeg"), let t = src.tracks.first(where: { $0.kind == "a" && $0.ord == dub }) else { return nil }
+    let path = src.url.path, d = src.probe.duration
+    progress(0.05, "Misuro il doppiaggio rispetto alla traccia originale…")
+    let er = fullEnvelope(path, track: ref, duration: d)
+    var r = segmentAlignment(er, fullEnvelope(path, track: dub, duration: d), vDur: d, maxSearch: 1)
+    guard r.why == nil, r.drift == nil, !r.segments.isEmpty else { return nil }
+    var segs = r.segments
+    for round in 0..<4 {
+        progress(0.2 + 0.2 * Double(round), "Ricostruisco il doppiaggio a tempo (passaggio \(round + 1))…")
+        let pg = pieceGraph(src, t, k: 1, segs: segs, from: 0, to: d, firstInput: 0, outLabel: "o")
+        guard run(ff, ["-nostdin", "-y", "-v", "error"] + pg.inputs + ["-filter_complex", pg.graph, "-map", "[o]", "-c:a", "flac", out.path]).status == 0 else { return nil }
+        r = segmentAlignment(er, fullEnvelope(out.path, track: 0, duration: d), vDur: d, maxSearch: 1)
+        guard r.why == nil, r.drift == nil, !r.segments.isEmpty else { return nil }
+        let off = r.segments.filter { ($0.d ?? 0) > 0.02 || ($0.d ?? 0) < -0.02 }
+        if off.isEmpty || round == 3 { return (segs, r.segments) }
+        segs = composeSegments(r.segments.map { var s = $0; if s.d == nil { s.d = 0 }; return s }, segs)   // i silenzi del residuo non sono buchi veri: si ignorano
+    }
+    return (segs, r.segments)
+}
+
 /// Il doppiaggio confrontato con la traccia originale dello stesso file: musica ed effetti sono gli stessi, quindi si vede se il doppiaggio è spostato (anche a gradini).
 /// La traccia originale viene dal master ed è quella a tempo con l'immagine.
 func scanDubSync(_ pr: Probe, _ path: String, _ c: Collector, progress: @escaping (Double) -> Void = { _ in }) {
@@ -11,21 +45,16 @@ func scanDubSync(_ pr: Probe, _ path: String, _ c: Collector, progress: @escapin
     guard let ref = a.indices.filter({ !ls[$0].isEmpty && ls[$0] != "ita" }).max(by: { (dbl(a[$0]["channels"]) ?? 0) < (dbl(a[$1]["channels"]) ?? 0) }) else { return }
     for k in a.indices where ls[k] == "ita" {
         let n = "traccia audio \(k + 1) (\(langLabel(ls[k])))"
-        var er: [Float] = [], ed: [Float] = []; let g = DispatchGroup()
-        g.enter(); DispatchQueue.global().async { er = fullEnvelope(path, track: ref, duration: pr.duration) { progress(0.5 * $0) }; g.leave() }
-        g.enter(); DispatchQueue.global().async { ed = fullEnvelope(path, track: k, duration: pr.duration); g.leave() }
-        g.wait()
-        let r = segmentAlignment(er, ed, vDur: pr.duration, maxSearch: 1)   // nello stesso file un doppiaggio non salta di secondi
-        guard r.why == nil, r.drift == nil, !r.segments.isEmpty else {
+        guard let segs = dubSegments(path, dub: k, ref: ref, duration: pr.duration, progress: { progress(0.5 * $0) }) else {
             c.rows("Audio \(k + 1)", order: 10 + k, [("Sincronia con l'originale", "non misurabile (musica ed effetti diversi da quelli della traccia in \(langLabel(ls[ref])))")]); continue
         }
-        let parts = r.segments.filter { $0.d != nil }, ds = parts.map { $0.d! }, lo = ds.min() ?? 0, hi = ds.max() ?? 0
+        let parts = segs.filter { $0.d != nil }, ds = parts.map { $0.d! }, lo = ds.min() ?? 0, hi = ds.max() ?? 0
         c.rows("Audio \(k + 1)", order: 10 + k, [("Sincronia con l'originale", lo > -0.02 && hi < 0.02 ? "a tempo con la traccia in \(langLabel(ls[ref])) (entro 20 ms)" : String(format: "da %+.0f a %+.0f ms rispetto alla traccia in %@, in %d tratti (+ = in ritardo)", lo * 1000, hi * 1000, langLabel(ls[ref]), parts.count))])
         let bad = parts.filter { $0.d! > syncLateTol || $0.d! < -syncEarlyTol }, badDur = bad.reduce(0) { $0 + $1.end - $1.start }
         guard badDur > 60 else { continue }
         func desc(_ s: MergeSegment) -> String { String(format: "da %@ a %@ %@ di %.0f ms", hms(s.start), hms(s.end), s.d! > 0 ? "in ritardo" : "in anticipo", abs(s.d!) * 1000) }
         let worst = bad.sorted { abs($0.d!) > abs($1.d!) }.prefix(6).sorted { $0.start < $1.start }
-        c.add(.warn, "Audio", "Il doppiaggio non è a tempo con l'originale — \(n)", String(format: "Confrontato con la traccia in %@ dello stesso file (stessa musica e stessi effetti): per %@ di film il doppiaggio è fuori dalla tolleranza (40 ms in anticipo, 60 ms in ritardo): ", langLabel(ls[ref]), hms(badDur)) + worst.map(desc).joined(separator: "; ") + ". In sala le labbra non vanno a tempo con le voci. Unendo questa copia a un'altra con «Unisci» Booth lo rimette a tempo tratto per tratto.", time: worst.first?.start)
+        c.add(.warn, "Audio", "Il doppiaggio non è a tempo con l'originale — \(n)", String(format: "Confrontato con la traccia in %@ dello stesso file (stessa musica e stessi effetti): per %@ di film il doppiaggio è fuori dalla tolleranza (40 ms in anticipo, 60 ms in ritardo): ", langLabel(ls[ref]), hms(badDur)) + worst.map(desc).joined(separator: "; ") + ". In sala le labbra non vanno a tempo con le voci. Booth lo rimette a tempo tratto per tratto prendendo come riferimento la traccia in \(langLabel(ls[ref])) (che è a tempo con l'immagine), e poi ricontrolla il risultato.", time: worst.first?.start, fix: [.retimeDub(k, ref)])
         c.fact("a\(k).dubOff", hi > -lo ? hi : lo)
     }
 }

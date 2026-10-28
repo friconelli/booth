@@ -12,6 +12,7 @@ func fixLabel(_ h: FixHint) -> String {
     case .setForced(_, let f): return f ? "Marca come forzati" : "Togli «forzati»"
     case .dropSub: return "Elimina la traccia"
     case .toDolby: return "Converti in Dolby"
+    case .retimeDub: return "Rimetti a tempo il doppiaggio"
     case .levelGain: return "Regola il volume"
     case .boostCenter: return "Alza i dialoghi"
     case .normalize: return "Compressione"

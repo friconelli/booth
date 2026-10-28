@@ -5,7 +5,7 @@ enum Sev: Int, Comparable { case ok, info, warn, error
     var label: String { ["OK", "Nota", "Attenzione", "Problema"][rawValue] }
 }
 /// Correzione suggerita da una segnalazione (i numeri sono posizioni all'interno del proprio tipo: audio 0, 1…, sottotitoli 0, 1…).
-enum FixHint { case defaultAudio(Int), defaultSub(Int?), setLang(String, Int), cleanSub(Int), dropSub(Int), eraseText(EraseRegion), normalize(Int), boostCenter(Int), levelGain(Int), deinterlace, toDolby(Int), clearTitle, setTitle(String), tonemap, repairEncoding(Int), setForced(Int, Bool), rename(String), setLangTo(String, Int, String), syncSubs(Int, Double, Double) }   // syncSubs: tempo nuovo = a·tempo + b
+enum FixHint { case defaultAudio(Int), defaultSub(Int?), setLang(String, Int), cleanSub(Int), dropSub(Int), eraseText(EraseRegion), normalize(Int), boostCenter(Int), levelGain(Int), deinterlace, toDolby(Int), clearTitle, setTitle(String), tonemap, repairEncoding(Int), setForced(Int, Bool), rename(String), setLangTo(String, Int, String), syncSubs(Int, Double, Double), retimeDub(Int, Int) }   // syncSubs: tempo nuovo = a·tempo + b; retimeDub: doppiaggio da rimettere a tempo sulla traccia originale (doppiaggio, riferimento)
 struct Finding: Identifiable { let id = UUID(); var sev: Sev; var area: String; var title: String; var detail: String; var time: Double?; var thumb: URL?; var fixes: [FixHint] = [] }
 extension Finding { var sig: String { area + "|" + title } }
 /// Segnalazioni che l'utente ha verificato a mano e giudicato non importanti: restano escluse anche rianalizzando il film (e la sua copia «(corretto)»).

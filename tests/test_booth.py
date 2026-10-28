@@ -287,6 +287,8 @@ try:
     if os.path.exists(du): ds = [sync(du, t) for t in (100, 300)]; check(all(abs(d) < 0.03 for d in ds), "italiano a tempo prima e dopo il tratto montato male (" + ", ".join(f"{d * 1000:+.0f} ms" for d in ds) + ")")
     a = analyze(dub)
     check("Il doppiaggio non è a tempo con l'originale" in a and "in ritardo di 120 ms" in a and "INDISPENSABILE" in a, "controllo del film: doppiaggio confrontato con l'inglese dello stesso file, 120 ms di ritardo dopo 3:20 segnalati")
+    rc, o = fixcopy(dub, "--retime-dub", "0:1"); dc = os.path.join(T, "doppiata (corretto).mkv")
+    check(rc == 0 and "doppiaggio rimesso a tempo" in o and os.path.exists(dc) and "a tempo con la traccia in inglese" in analyze(dc) and abs(sync(dc, 300)) < 0.03, f"doppiaggio a gradini rimesso a tempo sull'inglese dello stesso file, senza una seconda copia ({sync(dc, 300) * 1000 if os.path.exists(dc) else 0:+.0f} ms a 5:00)")
     a = analyze(best)
     check("CONSIGLI PER LA PROIEZIONE" in a and "• Volume:" in a and "• Collegamento audio:" in a and "doppiaggio" not in a, "controllo del film: consigli per la proiezione (punto dove regolare il volume, collegamento audio)")
     # due copie con lo stesso montaggio (tagli d'inquadratura allo stesso posto) ma il doppiaggio dell'una a gradini: non è un montaggio diverso

@@ -14,7 +14,7 @@ In cima al riepilogo, ricavati dalle misure: **da dove partire** (nero o immagin
 Epson EB-L530U (laser 5200 lm, WUXGA 1920×1200, 16:10, senza HDR): definito in `swift/Projector.swift`. Oltre 1920 pixel il film non si vede meglio, quindi nel confronto e nell'unione un 4K vale come un 1080p (conta solo il bitrate, perché ridotto a 1920 è più pulito); i consigli dicono come rende il file su questo proiettore e come impostare le proporzioni sul 16:10.
 
 ## Sincronia del doppiaggio
-Se il file ha una traccia italiana e una in un'altra lingua (di solito l'originale, che viene dal master ed è a tempo con l'immagine), Booth le confronta in tutto il film su musica ed effetti, che sono gli stessi, con ricerca entro ±1 s: un doppiaggio incollato male, anche a gradini, viene trovato tratto per tratto. Tolleranza EBU R37: fino a 40 ms in anticipo e 60 ms in ritardo; oltre per più di un minuto è **indispensabile per la sala**. Con una sola traccia audio la sincronia non si può misurare in modo affidabile (prove su tagli d'inquadratura e labiale con Vision: troppo incerte, specie sui doppiaggi): serve una seconda copia con «Unisci».
+Se il file ha una traccia italiana e una in un'altra lingua (di solito l'originale, che viene dal master ed è a tempo con l'immagine), Booth le confronta in tutto il film su musica ed effetti, che sono gli stessi, con ricerca entro ±1 s: un doppiaggio incollato male, anche a gradini, viene trovato tratto per tratto. Tolleranza EBU R37: fino a 40 ms in anticipo e 60 ms in ritardo; oltre per più di un minuto è **indispensabile per la sala**. «Rimetti a tempo il doppiaggio» lo ricostruisce tratto per tratto sulla traccia originale (stessa funzione dell'unione, FLAC intermedio, Dolby Digital 640 kb/s), poi rimisura il file nuovo: se resta fuori tolleranza per più di 30 s o il volume cambia di oltre 1 LU, la correzione è annullata. Caso reale: Il gigante di ferro. Con una sola traccia audio la sincronia non si può misurare in modo affidabile (prove su tagli d'inquadratura e labiale con Vision: troppo incerte, specie sui doppiaggi): serve una seconda copia con «Unisci».
 
 ## Indispensabile per la sala o miglioria?
 Ogni segnalazione è classificata (`isEssential` in `swift/Model.swift`). Il verdetto «Pronto per la sala» dipende **solo dalle indispensabili**; le migliorie stanno in una sezione chiusa.
@@ -85,7 +85,7 @@ Caso reale (Luis e gli alieni): MKV 720p a 24 fps senza italiano + AVI 576p a 25
 ## Uso
     ./build.sh                       # dist/Booth.app (+ dist/booth per la riga di comando)
     dist/booth --analyze film.mkv    # rapporto testuale
-    python3 tests/test_booth.py      # 93 controlli su film sintetici con difetti noti
+    python3 tests/test_booth.py      # 94 controlli su film sintetici con difetti noti
 
 Gli strumenti vengono copiati dentro l'app da `tools/bundle_tools.py` (`BUNDLE_FFMPEG=0 ./build.sh` per saltare e usare quelli di /opt/homebrew/bin). Per distribuire l'app pubblicamente tieni conto della licenza di ffmpeg (la build di Homebrew include componenti GPL). Solo Apple Silicon (arm64), macOS 13+. Non modifica mai i file analizzati.
 

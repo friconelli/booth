@@ -9,6 +9,7 @@ struct FixPlan {
     var lang: [String: String] = [:]                 // "a0" / "s1" → codice lingua a 3 lettere
     var cleanSubs: Set<Int> = [], dropSubs: Set<Int> = [], dropAudio: Set<Int> = [], normalize: Set<Int> = [], boostCenter: Set<Int> = [], levelGain: Set<Int> = [], toDolby: Set<Int> = []
     var syncSubs: [Int: (a: Double, b: Double)] = [:]   // sottotitoli da risincronizzare: tempo nuovo = a·tempo + b
+    var retimeDub: [Int: Int] = [:]                     // doppiaggio → traccia originale dello stesso file su cui rimetterlo a tempo, tratto per tratto
     var rename: String?                                  // nuovo nome del file (senza estensione)
     var repairSubs: Set<Int> = []                       // sottotitoli con accenti rovinati (doppia codifica) da riparare
     var forcedFlags: [Int: Bool] = [:]                  // etichetta «forzati» da impostare o togliere
@@ -17,9 +18,9 @@ struct FixPlan {
     var clearTitle = false                              // toglie il titolo dai metadati del contenitore
     var deinterlace = false                            // deinterlacciamento dell'immagine (ricodifica del video)
     var centerDB = 4.0                                 // quanto alzare il canale centrale
-    var audioTouched: Set<Int> { normalize.union(boostCenter).union(levelGain).union(toDolby) }
+    var audioTouched: Set<Int> { normalize.union(boostCenter).union(levelGain).union(toDolby).union(retimeDub.keys) }
     var eraseText: [EraseRegion] = []                  // scritte da cancellare dall'immagine (ricodifica solo il tratto in cui compaiono)
-    var changesContent: Bool { !cleanSubs.isEmpty || !dropSubs.isEmpty || !dropAudio.isEmpty || !normalize.isEmpty || !boostCenter.isEmpty || !levelGain.isEmpty || !toDolby.isEmpty || !syncSubs.isEmpty || !repairSubs.isEmpty || deinterlace || tonemap || !eraseText.isEmpty }
+    var changesContent: Bool { !cleanSubs.isEmpty || !dropSubs.isEmpty || !dropAudio.isEmpty || !normalize.isEmpty || !boostCenter.isEmpty || !levelGain.isEmpty || !toDolby.isEmpty || !retimeDub.isEmpty || !syncSubs.isEmpty || !repairSubs.isEmpty || deinterlace || tonemap || !eraseText.isEmpty }
     var isEmpty: Bool { !changesContent && !clearTitle && setTitle == nil && audioDefault == nil && subDefault == .keep && lang.isEmpty && forcedFlags.isEmpty }
     mutating func merge(_ h: FixHint) {
         switch h {
@@ -42,6 +43,7 @@ struct FixPlan {
         case .setForced(let i, let f): forcedFlags[i] = f
         case .setLangTo(let k, let i, let code): lang["\(k)\(i)"] = code
         case .syncSubs(let i, let a, let b): syncSubs[i] = (a, b)
+        case .retimeDub(let i, let r): retimeDub[i] = r
         }
     }
 }
@@ -63,6 +65,7 @@ extension FixPlan {
         for (i, v) in syncSubs.sorted(by: { $0.key < $1.key }) { l.append(v.a == 1 ? String(format: "Spostare di %+.1f s i %@", v.b, s(i)) : "Risincronizzare (frame rate) i \(s(i))") }
         for i in dropSubs.sorted() { l.append("Eliminare i \(s(i))") }
         for i in dropAudio.sorted() { l.append("Eliminare la traccia \(a(i))") }
+        for (i, r) in retimeDub.sorted(by: { $0.key < $1.key }) { l.append("Rimettere a tempo il doppiaggio \(a(i)) sulla traccia \(a(r)), tratto per tratto (ricodifica in Dolby Digital)") }
         for i in toDolby.sorted() { l.append("Convertire in Dolby Digital (AC-3) la traccia \(a(i))") }
         for i in levelGain.sorted() { l.append("Portare a -24 LUFS il volume della traccia \(a(i)) (guadagno fisso)") }
         for i in boostCenter.sorted() { l.append(String(format: "Alzare i dialoghi (centro +%.0f dB) nella traccia %@", centerDB, a(i))) }
@@ -220,6 +223,19 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
         if plan.cleanSubs.contains(k) { lines.append("Sottotitoli \(k + 1): tolte \(all.count - keep.count) battute con pubblicità o crediti") }
         if plan.syncSubs[k] != nil { lines.append(String(format: "Sottotitoli %d: risincronizzati (tempo × %.5f %+.2f s)", k + 1, sa, sb)) }
     }
+    // doppiaggi da rimettere a tempo: si misurano rispetto alla traccia originale (musica ed effetti in comune) e si ricostruiscono tratto per tratto,
+    // con la stessa funzione dell'unione; la traccia ricostruita (FLAC, senza perdite) entra poi nella scrittura al posto di quella originale
+    var retimed: [Int: Int] = [:]
+    if !plan.retimeDub.isEmpty, let src = loadMergeSource(url, src: 0) {
+        for (k, ref) in plan.retimeDub.sorted(by: { $0.key < $1.key }) {
+            guard audio.indices.contains(k), audio.indices.contains(ref), k != ref else { return FixResult(ok: false, message: "Tracce del doppiaggio non valide.") }
+            let f = work.appendingPathComponent("dub\(k).mka")
+            guard let (sg, _) = retimeDubTrack(src, dub: k, ref: ref, out: f, progress: { progress(0.04 * $0, $1) }), FileManager.default.fileExists(atPath: f.path) else { return FixResult(ok: false, message: "Non riesco a misurare o ricostruire il doppiaggio rispetto alla traccia \(ref + 1): musica ed effetti non coincidono abbastanza. Il file non è stato toccato.") }
+            inputs += ["-i", f.path]; retimed[k] = extra.count + retimed.count + 1
+            let ds = sg.compactMap(\.d)
+            lines.append(String(format: "Audio %d: doppiaggio rimesso a tempo sulla traccia %d in %d tratti (correzioni da %+.0f a %+.0f ms)", k + 1, ref + 1, ds.count, -(ds.max() ?? 0) * 1000, -(ds.min() ?? 0) * 1000))
+        }
+    }
     // misure sull'originale: servono per calcolare il guadagno e per controllare dopo che l'audio non sia peggiorato
     var beforeLoud: [Int: (Double, Double, Double)] = [:], beforeDial: [Int: DialogueStats] = [:], gains: [Int: Double] = [:]
     for k in plan.audioTouched.sorted() {
@@ -250,12 +266,16 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
     }
     var j = 0
     for (i, s) in audio.enumerated() where !plan.dropAudio.contains(i) {
-        a += ["-map", "0:a:\(i)"]
+        if let x = retimed[i] {   // traccia ricostruita: i suoi metadati vanno ripresi dall'originale
+            a += ["-map", "\(x):a:0"]; if !lang(s).isEmpty { a += ["-metadata:s:a:\(j)", "language=\(lang(s))"] }; if let t = tags(s)["title"] { a += ["-metadata:s:a:\(j)", "title=\(t)"] }
+            if plan.audioDefault == nil { a += ["-disposition:a:\(j)", disp(s, "default") == 1 ? "default" : "0"] }
+        } else { a += ["-map", "0:a:\(i)"] }
         if let l = plan.lang["a\(i)"] { a += ["-metadata:s:a:\(j)", "language=\(l)"] }
         if let d = plan.audioDefault { a += ["-disposition:a:\(j)", i == d ? "default" : "0"] }
         if plan.audioTouched.contains(i) {
             let ch = (s["channels"] as? Int) ?? 2
             var br = min(dbl(s["bit_rate"]) ?? dbl(tags(s)["bps"]) ?? 448_000, 640_000)
+            if retimed[i] != nil { br = ch >= 6 ? 640_000 : ch == 2 ? 384_000 : 192_000 }
             if plan.toDolby.contains(i) { br = ch >= 6 ? 640_000 : ch == 2 ? 384_000 : 192_000; lines.append("Audio \(i + 1): convertita da \((s["codec_name"] as? String ?? "?").uppercased()) a Dolby Digital (AC-3) a \(Int(br / 1000)) kb/s") }
             var chain: [String] = []
             if let g = gains[i] {   // guadagno fisso: nessun effetto sulla dinamica, il limitatore evita solo il clipping
@@ -268,7 +288,7 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
             }
             if plan.normalize.contains(i) { chain.append(dynamicsChain); lines.append("Audio \(i + 1): compressione dinamica (\(dynamicsChain.split(separator: ",")[0]) + limitatore)") }
             a += ["-c:a:\(j)", "ac3", "-b:a:\(j)", "\(Int(max(br, 192_000)))"] + (chain.isEmpty ? [] : ["-filter:a:\(j)", chain.joined(separator: ",")])
-            if !plan.toDolby.contains(i) { lines.append("Audio \(i + 1): ricodificata in AC3") }
+            if !plan.toDolby.contains(i) && retimed[i] == nil { lines.append("Audio \(i + 1): ricodificata in AC3") }
         }
         j += 1
     }
@@ -324,7 +344,14 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
         // regola di fondo: meglio non toccare l'audio che peggiorarlo
         func reject(_ why: String) -> FixResult { FixResult(ok: false, message: "Correzione audio annullata: \(why). Il file non è stato toccato.", lines: lines) }
         if af.2 > 0.0 && af.2 > b.2 + 0.3 { return reject("avrebbe causato distorsione (il picco passa da \(String(format: "%+.1f", b.2)) a \(String(format: "%+.1f", af.2)) dBFS)") }   // conta il peggioramento, non il valore assoluto: molte tracce hanno già picchi sopra 0
-        if plan.toDolby.contains(k), plan.levelGain.isDisjoint(with: [k]), abs(af.0 - b.0) > 1.0 { return reject(String(format: "la conversione avrebbe cambiato il volume (da %.1f a %.1f LUFS)", b.0, af.0)) }
+        if let ref = plan.retimeDub[k] {   // il doppiaggio deve risultare a tempo con l'originale in tutto il film
+            let refOut = (0..<ref).filter { !plan.dropAudio.contains($0) }.count
+            guard let sg = dubSegments(tmp.path, dub: outOrd, ref: refOut, duration: np.duration) else { return reject("non riesco a verificare la sincronia del doppiaggio nel file nuovo") }
+            let bad = sg.filter { ($0.d ?? 0) > syncLateTol || ($0.d ?? 0) < -syncEarlyTol }, ds = sg.compactMap(\.d)
+            lines.append(String(format: "Audio %d dopo: scarto dal riferimento da %+.0f a %+.0f ms in tutto il film", k + 1, (ds.min() ?? 0) * 1000, (ds.max() ?? 0) * 1000))
+            if bad.reduce(0, { $0 + $1.end - $1.start }) > 30 { return reject("il doppiaggio non risulta ancora a tempo (es. da \(hms(bad[0].start)) a \(hms(bad[0].end)))") }
+        }
+        if (plan.toDolby.contains(k) || plan.retimeDub[k] != nil), plan.levelGain.isDisjoint(with: [k]), abs(af.0 - b.0) > 1.0 { return reject(String(format: "la conversione avrebbe cambiato il volume (da %.1f a %.1f LUFS)", b.0, af.0)) }
         if plan.levelGain.contains(k), abs(af.0 - levelTarget) > 2.5 { return reject(String(format: "il volume ottenuto (%.1f LUFS) è lontano dall'obiettivo (%.0f)", af.0, levelTarget)) }
         if let bd = beforeDial[k] {
             guard let ad = dialogueStats(tmp.path, outOrd) else { return reject("non riesco a misurare i dialoghi dopo la correzione") }
