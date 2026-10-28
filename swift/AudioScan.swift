@@ -29,6 +29,17 @@ func scanAudio(_ pr: Probe, _ path: String, _ k: Int, _ c: Collector, progress: 
     let p10 = pct(0.10), p50 = pct(0.50), p95 = pct(0.95)
     if vals.count > 60 { rows.append(("Scene sommesse / tipiche / forti", String(format: "%.0f / %.0f / %.0f LUFS", p10, p50, p95))) }
     c.rows("Audio \(k + 1)", order: 10 + k, rows)
+    c.fact("a\(k).I", I); if let r = lra { c.fact("a\(k).lra", r) }; if let p = peak { c.fact("a\(k).peak", p) }; c.fact("a\(k).p50", p50); c.fact("a\(k).p95", p95); c.fact("a\(k).end", lastT)
+    // un tratto di 20 s al livello tipico e stabile (di solito dialogo), dopo i titoli di testa: è il punto giusto per regolare il volume della sala
+    var bestT: Int?, bestS = 1e9
+    for t in stride(from: Int(min(240, d * 0.1)), to: Int(d * 0.7), by: 5) {
+        let w = (t..<t + 20).compactMap { short[$0] }.filter { $0 > -60 }; guard w.count >= 18 else { continue }
+        let med = w.sorted()[w.count / 2], mean = w.reduce(0, +) / Double(w.count), sd = sqrt(w.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(w.count))
+        if abs(med - p50) < 2, abs(med - p50) + sd < bestS { bestS = abs(med - p50) + sd; bestT = t }
+    }
+    if let t = bestT { c.fact("a\(k).talkT", Double(t)) }
+    // il punto più forte del film (esclusi gli ultimi 5 minuti, di solito titoli di coda)
+    if let loud = short.filter({ Double($0.key) < max(d - 300, d * 0.8) }).max(by: { $0.value < $1.value }) { c.fact("a\(k).loudT", Double(max(0, loud.key - 2))); c.fact("a\(k).loudL", loud.value) }
     let ar = "Audio"
     let dynHint: [FixHint] = (dbl(s["channels"]) ?? 0) == 6 ? [.boostCenter(k)] : []   // niente compressori: per i 5.1 si alza solo il centro; negli altri casi nessuna correzione automatica
     if I < -70 || vals.count < 10 { c.add(.error, ar, "Audio quasi muto — \(n)", "Livello medio \(String(format: "%.0f", I)) LUFS: la traccia sembra vuota."); return }

@@ -40,6 +40,7 @@ func checkVideo(_ pr: Probe, _ c: Collector) {
     rows.append(("Scansione", field == "progressive" ? "progressiva" : field == "unknown" ? "non dichiarata" : "interlacciata (\(field))"))
     rows.append(("Colore", [trc, prim, (v["color_space"] as? String) ?? "", (v["color_range"] as? String) ?? ""].filter { !$0.isEmpty && $0 != "unknown" }.joined(separator: " · ").isEmpty ? "non dichiarato" : [trc, prim, (v["color_space"] as? String) ?? "", (v["color_range"] as? String) ?? ""].filter { !$0.isEmpty && $0 != "unknown" }.joined(separator: " · ")))
     c.rows("Video", order: 1, rows)
+    c.fact("v.w", Double(w)); c.fact("v.h", Double(h)); if br > 0 { c.fact("v.br", br) }; if br > 0 && fps > 0 && w > 0 && h > 0 { c.fact("v.bpp", br / (Double(w * h) * fps)) }; c.fact("v.modern", ["hevc", "av1", "vp9"].contains(codec) ? 1 : 0)
 
     if w > 0 && w < 960 { c.add(.warn, "Video", "Risoluzione bassa per la proiezione", "\(w)×\(h): su uno schermo grande si vedrà morbida e a blocchi.") }
     else if w > 0 && w < 1280 { c.add(.info, "Video", "Risoluzione inferiore a HD", "\(w)×\(h).") }

@@ -15,6 +15,7 @@ struct DialogueStats { var centerMedian: Double; var frontMedian: Double; var co
 func scanDialogue(_ pr: Probe, _ path: String, _ k: Int, _ c: Collector) {
     let n = "traccia audio \(k + 1)" + (lang(pr.audio[k]).isEmpty ? "" : " (\(langLabel(lang(pr.audio[k]))))")
     guard let d = dialogueStats(path, k) else { return }
+    c.fact("a\(k).cover", d.coveredPct)
     c.rows("Audio \(k + 1)", order: 10 + k, [("Dialoghi (canale centrale)", String(format: "%.0f LUFS", d.centerMedian)), ("Musica/effetti (fronte)", String(format: "%.0f LUFS", d.frontMedian)), ("Musica sopra i dialoghi", String(format: "%.0f%% dei momenti con parlato (>6 LU) · %.0f%% (>10 LU)", d.coveredPct, d.covered10Pct))])
     if d.coveredPct >= 12 {
         let where_ = d.worst.prefix(5).map { hms(Double($0.0)) }.joined(separator: ", ")

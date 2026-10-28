@@ -42,13 +42,14 @@ func scanPackets(_ pr: Probe, _ path: String, _ c: Collector) {
 // MARK: finestre video: interlacciamento, bande nere, neri, fermi immagine, errori di decodifica
 struct WinResult { var brng = 0.0, tout = 0.0, block = 0.0, blur = 0.0, qn = 0; var interl = 0, prog = 0; var crops: [String: Int] = [:]; var blacks: [(Double, Double)] = []; var freezes: [(Double, Double)] = []; var errs: [String] = [] }
 private func videoWindow(_ path: String, _ start: Double, _ len: Double) -> WinResult {
-    var r = WinResult(); guard let ff = tool("ffmpeg") else { return r }
+    var r = WinResult(), fs: Double?; guard let ff = tool("ffmpeg") else { return r }
     let vf = "idet,cropdetect=limit=0.1:round=2:reset=1,blackdetect=d=0.4:pic_th=0.97:pix_th=0.10,freezedetect=n=-60dB:d=3,signalstats=stat=tout+brng,blockdetect,blurdetect,metadata=mode=print:file=-"
     let o = run(ff, ["-nostats", "-hide_banner", "-ss", String(start), "-t", String(len), "-i", path, "-map", "0:v:0", "-an", "-sn", "-vf", vf, "-f", "null", "-"]) { l in
         if let m = l.match(#"Multi frame detection: TFF:\s*(\d+) BFF:\s*(\d+) Progressive:\s*(\d+)"#) { r.interl += (Int(m[1]) ?? 0) + (Int(m[2]) ?? 0); r.prog += Int(m[3]) ?? 0 }
         else if let m = l.match(#"crop=(\d+:\d+:\d+:\d+)"#) { r.crops[m[1], default: 0] += 1 }
         else if let m = l.match(#"black_start:([\d.]+) black_end:([\d.]+)"#) { r.blacks.append((start + (Double(m[1]) ?? 0), (Double(m[2]) ?? 0) - (Double(m[1]) ?? 0))) }
-        else if let m = l.match(#"freeze_duration: ([\d.]+)"#) { r.freezes.append((start, Double(m[1]) ?? 0)) }
+        else if let m = l.match(#"freeze_start: ([\d.]+)"#) { fs = Double(m[1]) }
+        else if let m = l.match(#"freeze_duration: ([\d.]+)"#) { r.freezes.append((start + (fs ?? 0), Double(m[1]) ?? 0)); fs = nil }
         else if l.has(#"error while decoding|corrupt|invalid (nal|data|frame)|missing reference|concealing|co located POCs|reference picture missing|Invalid data found"#) { r.errs.append(l) }
     }
     // segnale (signalstats), blocchi e sfocatura: medie sui fotogrammi del tratto
@@ -88,10 +89,15 @@ func scanVideoWindows(_ pr: Probe, _ path: String, _ c: Collector, progress: @es
     if let b = res[0].blacks.first, b.1 >= 59 { c.add(.error, "Video", "Immagine nera nei primi 60 secondi", "Il video sembra vuoto all'inizio.", time: 0) }
     if let b = res[2].blacks.last, b.0 + b.1 >= d - 2, b.1 > 20 { c.add(.warn, "Video", String(format: "Nero finale lungo (%.0f s)", b.1), "Dopo la fine il film resta nero a lungo.", time: b.0) }
     if let b = res[1].blacks.first(where: { $0.1 > 5 }) { c.add(.warn, "Video", String(format: "Schermo nero di %.0f s a metà film", b.1), "Se non è voluto può indicare un pezzo mancante o un errore di codifica.", time: b.0) }
+    // da dove far partire il film: nero e fermi immagine che si susseguono dall'inizio
+    var startAt = 0.0, grew = true
+    while grew { grew = false; for x in res[0].blacks + res[0].freezes where x.0 <= startAt + 0.5 && x.0 + x.1 > startAt + 0.01 { startAt = x.0 + x.1; grew = true } }
+    if startAt >= 3 { c.fact("v.startAt", startAt) }
     for (i, r) in res.enumerated() { if let f = r.freezes.first(where: { $0.1 > 8 }) { c.add(.info, "Video", String(format: "Immagine ferma per %.0f s (%@)", f.1, wins[i].0), "Fermo immagine o scheda fissa.", time: f.0) } }
     let q = res.filter { $0.qn > 100 }
     if !q.isEmpty {
         let brng = q.map(\.brng).reduce(0, +) / Double(q.count), tout = q.map(\.tout).reduce(0, +) / Double(q.count), block = q.map(\.block).reduce(0, +) / Double(q.count), blur = q.map(\.blur).reduce(0, +) / Double(q.count)
+        c.fact("v.block", block); c.fact("v.blur", blur)
         c.rows("Video", order: 1, [("Livelli fuori standard", String(format: "%.2f%% dei pixel (nei tratti campionati)", brng * 100)), ("Blocchettatura / sfocatura", String(format: "%.2f / %.1f", block, blur))])
         if brng > 0.05 { c.add(.warn, "Video", "Livelli luminosi fuori standard", String(format: "Il %.1f%% dei pixel è fuori dalla gamma di luminosità legale (16-235; nei film normali resta sotto l'1,5%%): bianchi o neri bruciati nel passaggio al proiettore.", brng * 100)) }
         if tout > 0.005 { c.add(.warn, "Video", "Disturbi puntuali nell'immagine (dropout)", String(format: "Lo %.2f%% dei pixel risulta anomalo rispetto ai fotogrammi vicini: tipico di una sorgente rovinata.", tout * 100)) }
@@ -192,6 +198,7 @@ func scanSubtitles(_ pr: Probe, _ path: String, _ tmp: URL, _ c: Collector) {
         let cues = parseSRT(raw).filter { !$0.t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.sorted { $0.s < $1.s }
         let forced = disp(s, "forced") == 1
         if cues.isEmpty { c.add(forced ? .info : .error, area, "Sottotitoli vuoti — \(n)", "La traccia non contiene alcuna battuta.", fix: [.dropSub(item.offset)]); continue }
+        c.fact("s\(item.offset).last", cues.last!.e); c.fact("s\(item.offset).n", Double(cues.count))
         c.rows("Sottotitoli \(item.offset + 1)", order: 30 + item.offset, [("Battute lette", "\(cues.count)"), ("Prima battuta", hms(cues[0].s)), ("Ultima battuta", hms(cues.last!.e))])
         // pubblicità e crediti
         var ads = 0

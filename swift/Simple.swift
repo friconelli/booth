@@ -154,6 +154,7 @@ struct JobDetail: View {
                 }
             }
             if nE > 0 { VStack(spacing: 8) { ForEach(eItems) { fixRow($0) }; ForEach(eTodo) { manualRow($0) } } }
+            if !r.tips.isEmpty { tipsCard(r.tips) }
             if nP > 0 {
                 Accordion(title: "Migliorie facoltative (\(nP))", expanded: $showPlus, font: .subheadline.weight(.semibold)) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -175,6 +176,18 @@ struct JobDetail: View {
                 }
             }
         }
+    }
+    /// Consigli pratici per la proiezione: cosa fare in sala, dove provare il volume, cosa aspettarsi sullo schermo.
+    func tipsCard(_ tips: [Tip]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Consigli per la proiezione").font(.subheadline.weight(.semibold))
+            ForEach(tips) { t in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: t.icon).foregroundStyle(.teal).frame(width: 22)
+                    VStack(alignment: .leading, spacing: 2) { Text(t.title).font(.callout.weight(.semibold)); Text(t.text).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
+                }
+            }
+        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(RoundedRectangle(cornerRadius: 10).fill(Color.teal.opacity(0.07)))
     }
     func fixRow(_ it: FixItem, plus: Bool = false) -> some View {
         let (title, ctx) = splitTitle(it.title); let isOpen = open.contains(it.id)

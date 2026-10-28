@@ -285,6 +285,20 @@ try:
     rc, o = merge(best, dub, "--audio", "b0", "--output", os.path.join(T, "dub.mkv")); du = os.path.join(T, "dub.mkv")
     check(rc == 0 and "inglese di tutte e due le copie" in o and "doppiaggio non è sempre a tempo" in o, "lingua in comune: allinea inglese con inglese e trova il doppiaggio italiano spostato a metà film")
     if os.path.exists(du): ds = [sync(du, t) for t in (100, 300)]; check(all(abs(d) < 0.03 for d in ds), "italiano a tempo prima e dopo il tratto montato male (" + ", ".join(f"{d * 1000:+.0f} ms" for d in ds) + ")")
+    a = analyze(dub)
+    check("Il doppiaggio non è a tempo con l'originale" in a and "in ritardo di 120 ms" in a and "INDISPENSABILE" in a, "controllo del film: doppiaggio confrontato con l'inglese dello stesso file, 120 ms di ritardo dopo 3:20 segnalati")
+    a = analyze(best)
+    check("CONSIGLI PER LA PROIEZIONE" in a and "• Volume:" in a and "• Collegamento audio:" in a and "doppiaggio" not in a, "controllo del film: consigli per la proiezione (punto dove regolare il volume, collegamento audio)")
+    # due copie con lo stesso montaggio (tagli d'inquadratura allo stesso posto) ma il doppiaggio dell'una a gradini: non è un montaggio diverso
+    CUTS = "hue=H=2*PI*mod(floor(t/2.3)*0.37\\,1):s=1,eq=brightness='0.25*mod(floor(t/2.3)\\,3)-0.25':eval=frame"
+    def cutfilm(name, audio_graph, lang):
+        out = os.path.join(T, name)
+        ff("-f", "lavfi", "-i", f"testsrc2=s=640x360:r=24000/1001:d={DM}", "-filter_complex", audio_graph + "[a]", "-map", "0:v", "-map", "[a]", "-vf", CUTS, "-c:v", "libx264", "-preset", "ultrafast", "-b:v", "800k",
+           "-c:a", "aac", "-b:a", "192k", "-metadata:s:a:0", f"language={lang}", "-shortest", out); return out
+    cb = cutfilm("tagli_eng.mkv", mix(EN), "eng")
+    ca = cutfilm("tagli_ita.mkv", mix(IT, ",asplit[x][y];[x]atrim=0:200,asetpts=PTS-STARTPTS[p];[y]atrim=200,asetpts=PTS-STARTPTS,adelay=120:all=1[q];[p][q]concat=n=2:v=0:a=1,atrim=0:" + str(DM)), "ita")
+    rc, o = merge(ca, cb, "--video", "b", "--audio", "a0", "--align-only")
+    check(rc == 0 and "Doppiaggio a gradini" in o and "le immagini delle due copie sono uguali" in o and "Montaggio diverso" not in o, "immagini uguali ai cambi di scarto: Booth dice che è il doppiaggio a gradini, non un montaggio diverso")
     other = film("altro_film.mkv", "640x360", "24000/1001", f"anoisesrc=d={DM}:c=brown:a=0.5:r=48000,{gate(55.55, 6)},aformat=channel_layouts=stereo", "ita", DM)
     rc, o = merge(best, other, "--audio", "b0", "--output", os.path.join(T, "altro.mkv"))
     check(rc != 0 and "NON ALLINEATO" in o and not os.path.exists(os.path.join(T, "altro.mkv")), "film diverso: unione rifiutata, nessun file creato")

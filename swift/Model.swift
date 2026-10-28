@@ -28,11 +28,15 @@ func isEssential(_ f: Finding) -> Bool {
     guard f.sev == .warn else { return false }
     let essentialWarnings = ["Sottotitoli attivi di default", "La lingua parlata non corrisponde", "sfasati", "si sfasano", "finiscono molto prima del film", "più lunghi del film", "iniziano molto tardi",
                              "Buco nel flusso video", "Buco nell'audio", "L'audio finisce prima", "finiscono a istanti diversi", "non partono insieme", "Errori di decodifica", "Schermo nero di",
-                             "HDR (", "Dolby Vision profilo 5", "Video interlacciato", "dura meno del previsto"]
+                             "HDR (", "Dolby Vision profilo 5", "Video interlacciato", "dura meno del previsto", "non è a tempo con l'originale"]
     return essentialWarnings.contains { f.title.contains($0) }
 }
 
+/// Consiglio pratico per la proiezione, ricavato dalle misure (dove provare il volume, da dove partire, che collegamento usare…).
+struct Tip: Identifiable { let id = UUID(); var icon: String; var title: String; var text: String }
+
 struct Report {
+    var tips: [Tip] = []
     var file: URL; var duration = 0.0; var findings: [Finding] = []; var tech: [Section] = []; var seconds = 0.0; var audioTracks: [TrackInfo] = []; var subTracks: [TrackInfo] = []; var meta: MovieMeta?
     var ignored: [Finding] { let d = Dismissals.get(file); return findings.filter { $0.sev > .ok && d.contains($0.sig) } }   // verificate a mano dall'utente
     var visible: [Finding] { let d = Dismissals.get(file); return findings.filter { !d.contains($0.sig) } }
@@ -42,6 +46,7 @@ struct Report {
     var verdict: String { switch worst { case .error: return "Problemi da risolvere"; case .warn: return "Da controllare"; default: return "Pronto per la sala" } }
     var text: String {
         var s = "BOOTH — \(file.lastPathComponent)\nEsito: \(verdict)  (\(essential.count) indispensabili per la sala, \(extras.count) migliorie facoltative)\n"
+        if !tips.isEmpty { s += "\nCONSIGLI PER LA PROIEZIONE\n"; for t in tips { s += "• \(t.title): \(t.text)\n" } }
         func block(_ title: String, _ fs: [Finding]) {
             guard !fs.isEmpty else { return }; s += "\n\(title)\n"
             for f in fs.sorted(by: { $0.sev > $1.sev }) {
@@ -57,7 +62,10 @@ struct Report {
 
 /// Raccoglie segnalazioni e dati dalle analisi che girano in parallelo.
 final class Collector {
-    private let lock = NSLock(); private var fs: [Finding] = []; private var secs: [String: Section] = [:]
+    private let lock = NSLock(); private var fs: [Finding] = []; private var secs: [String: Section] = [:]; private var fx: [String: Double] = [:]
+    /// Misure numeriche che servono ai consigli per la proiezione (es. «a0.talkT» = secondo di dialogo tipico della traccia audio 1).
+    func fact(_ k: String, _ v: Double) { lock.lock(); fx[k] = v; lock.unlock() }
+    var facts: [String: Double] { lock.lock(); defer { lock.unlock() }; return fx }
     func add(_ sev: Sev, _ area: String, _ title: String, _ detail: String = "", time: Double? = nil, thumb: URL? = nil, fix: [FixHint] = []) {
         lock.lock(); fs.append(Finding(sev: sev, area: area, title: title, detail: detail, time: time, thumb: thumb, fixes: fix)); lock.unlock()
     }

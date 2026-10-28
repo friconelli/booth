@@ -195,7 +195,7 @@ struct MergeView: View {
             } else if let f = m.alignFail {
                 Label(f, systemImage: "xmark.octagon.fill").foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
             } else if let a = m.alignment {
-                Label(a.isConstant ? "Audio allineato. Controlla l'anteprima: le labbra devono andare a tempo con le voci." : "Audio allineato in \(a.effSegments.filter { $0.d != nil }.count) parti. Controlla l'anteprima soprattutto nei punti rossi, dove le due copie hanno un montaggio diverso.", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout.weight(.medium)).fixedSize(horizontal: false, vertical: true)
+                Label(a.isConstant ? "Audio allineato. Controlla l'anteprima: le labbra devono andare a tempo con le voci." : "Audio allineato in \(a.effSegments.filter { $0.d != nil }.count) parti. Controlla l'anteprima soprattutto nei punti rossi, dove " + (a.onlyDub ? "il doppiaggio dell'altra copia cambia scarto (le immagini sono uguali)." : "le due copie hanno un montaggio diverso."), systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout.weight(.medium)).fixedSize(horizontal: false, vertical: true)
                 DisclosureGroup("Dettagli") { VStack(alignment: .leading, spacing: 3) { ForEach(Array(a.lines.enumerated()), id: \.offset) { Text($0.element).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) } }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4) }.font(.caption)
                 PartsBar(alignment: a, duration: m.srcs[m.video].probe.duration, current: m.previewTime) { m.preview(at: $0) }
                 riskList(a)
@@ -300,7 +300,7 @@ struct PartsBar: View {
                 }.frame(width: w, height: 14, alignment: .leading).cornerRadius(3).contentShape(Rectangle())   // larghezza esplicita: con gli offset lo ZStack prenderebbe solo quella della prima parte
                 .gesture(DragGesture(minimumDistance: 0).onEnded { v in go(max(0, min(duration, Double(v.location.x / w) * duration))) })
             }.frame(height: 22)
-            HStack { Text("0:00"); Spacer(); Text(alignment.segments.count > 1 ? "\(alignment.segments.count - 1) tagli in rosso, momenti da controllare in arancione: clicca per guardarli" : "Un'unica parte: stesso montaggio"); Spacer(); Text(hms(duration)) }.font(.caption2).foregroundStyle(.secondary)
+            HStack { Text("0:00"); Spacer(); Text(alignment.segments.count > 1 ? "\(alignment.segments.count - 1) \(alignment.onlyDub ? "gradini del doppiaggio" : "tagli") in rosso, momenti da controllare in arancione: clicca per guardarli" : "Un'unica parte: stesso montaggio"); Spacer(); Text(hms(duration)) }.font(.caption2).foregroundStyle(.secondary)
         }.frame(maxWidth: 640)
     }
 }

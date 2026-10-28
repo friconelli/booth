@@ -170,7 +170,7 @@ func localCorr(_ ev: [Float], _ eo: [Float], t: Double, len: Double, d: Double) 
 /// Un tratto del film (tempo dell'immagine scelta): [start, end) prende l'audio dell'altra copia da start+d; d nil = silenzio (lì l'altra copia non ha quella scena).
 struct MergeSegment { var start: Double; var end: Double; var d: Double?; var sure = true }   // sure: il confine d'inizio è stato trovato con certezza
 struct Alignment {
-    var k = 1.0; var segments: [MergeSegment] = []; var points: [AlignPoint] = []; var refLabel = ""; var refOrd = 0; var speedLabel = ""; var spread = 0.0; var auto: [Int: Double] = [:]; var nudges: [Int: Double] = [:]; var measOrd: Int? = nil; var notes: [String] = []   // auto: correzione trovata dalla verifica del film unito; nudges: correzione a mano per parte (indice della parte → secondi dall'anteprima (secondi; positivo = l'audio arriva prima)
+    var k = 1.0; var segments: [MergeSegment] = []; var points: [AlignPoint] = []; var refLabel = ""; var refOrd = 0; var speedLabel = ""; var spread = 0.0; var auto: [Int: Double] = [:]; var nudges: [Int: Double] = [:]; var measOrd: Int? = nil; var notes: [String] = []; var dubAt: Set<Int> = []   // dubAt: parti all'inizio delle quali le immagini delle due copie sono uguali (lo scarto che cambia è del doppiaggio, non del montaggio); auto: correzione trovata dalla verifica del film unito; nudges: correzione a mano per parte (indice della parte → secondi dall'anteprima (secondi; positivo = l'audio arriva prima)
     var d: Double { (segments.first { $0.d != nil }?.d ?? 0) + (nudges[segments.firstIndex { $0.d != nil } ?? 0] ?? 0) }
     /// Indice della parte che contiene il tempo t (dell'immagine scelta).
     func part(at t: Double) -> Int { segments.lastIndex { $0.start <= t } ?? 0 }
@@ -179,10 +179,19 @@ struct Alignment {
     /// Le parti con la correzione a mano applicata.
     var effSegments: [MergeSegment] { segments.enumerated().map { i, s in MergeSegment(start: s.start, end: s.end, d: s.d.map { $0 + (nudges[i] ?? 0) + (auto[i] ?? 0) }, sure: s.sure) } }
     var isConstant: Bool { segments.count == 1 }
-    /// I punti in cui le due copie hanno un montaggio diverso.
+    /// Tutti i cambi controllati sulle immagini sono del doppiaggio: le due copie hanno lo stesso montaggio.
+    var onlyDub: Bool { !dubAt.isEmpty && segments.indices.dropFirst().allSatisfy { dubAt.contains($0) } }
+    /// I punti in cui cambia lo scarto: montaggio diverso delle due copie, oppure doppiaggio dell'altra copia a gradini (se le immagini sono uguali).
     var differences: [String] {
         var out: [String] = []
         for (i, s) in segments.enumerated() where i > 0 {
+            if dubAt.contains(i) {
+                let pd = segments[..<i].last(where: { $0.d != nil })?.d
+                if s.d == nil { out.append("a \(hms(s.start)) il doppiaggio dell'altra copia torna indietro di \(dur(s.end - s.start)): lì l'audio resta in silenzio") }
+                else if segments[i - 1].d == nil && dubAt.contains(i - 1) { continue }
+                else if let pd = pd, let d = s.d { out.append("a \(hms(s.start)) il doppiaggio dell'altra copia si sposta di \(dur(abs(d - pd))) \(d > pd ? "in avanti: vengono saltati" : "indietro: lì l'audio resta in silenzio")") }
+                continue
+            }
             if s.d == nil { out.append("a \(hms(s.start)) alla copia dell'audio mancano \(dur(s.end - s.start)): lì l'audio resta in silenzio") }
             else if let pd = segments[..<i].last(where: { $0.d != nil })?.d, let d = s.d, d - pd > 0.02 { out.append("a \(hms(s.start)) la copia dell'audio ha \(dur(d - pd)) in più: vengono saltati") }
         }
@@ -194,7 +203,7 @@ struct Alignment {
         var r: [RiskMoment] = []
         // un taglio incerto conta solo se lo spostamento supera un fotogramma: sotto, anche un punto sbagliato non si vede
         func jump(_ i: Int) -> Double { let pd = segments[..<i].last { $0.d != nil }?.d, nd = segments[i...].first { $0.d != nil }?.d; return segments[i].d == nil ? segments[i].end - segments[i].start : abs((nd ?? 0) - (pd ?? 0)) }
-        for (i, s) in segments.enumerated() where i > 0 && !s.sure && jump(i) > 0.045 { r.append(RiskMoment(t: s.start, why: s.d == nil ? "Qui manca un pezzo all'altra copia, ma il punto esatto è incerto" : "Cambio di montaggio in un punto poco chiaro")) }
+        for (i, s) in segments.enumerated() where i > 0 && !s.sure && jump(i) > 0.045 { r.append(RiskMoment(t: s.start, why: dubAt.contains(i) ? "Qui il doppiaggio cambia scarto, ma il punto esatto è incerto" : s.d == nil ? "Qui manca un pezzo all'altra copia, ma il punto esatto è incerto" : "Cambio di montaggio in un punto poco chiaro")) }
         for p in points where p.good {
             let a = part(at: p.t), b = part(at: p.t + 20)
             guard a == b, let d = segments[a].d, abs(p.d - d) > 0.045 else { continue }
@@ -210,7 +219,7 @@ struct Alignment {
         var l: [String] = []
         if abs(k - 1) > 1e-6 { l.append("Velocità corretta: " + (speedLabel.isEmpty ? String(format: "fattore %.6f", k) : speedLabel) + " (anche il tono torna quello giusto)") }
         l.append(abs(d) < 0.0005 ? "Nessuno sfasamento all'inizio" : String(format: "All'inizio l'audio dell'altra copia è %@ di %.3f s: viene spostato", d > 0 ? "in ritardo" : "in anticipo", abs(d)))
-        let diff = differences; if !diff.isEmpty { l.append("Montaggio diverso in \(diff.count) punt\(diff.count == 1 ? "o" : "i"):"); l += diff.map { "  – " + $0 } }
+        let diff = differences; if !diff.isEmpty { l.append((onlyDub ? "Doppiaggio a gradini, cambia scarto in \(diff.count) punt\(diff.count == 1 ? "o" : "i") (le immagini delle due copie sono uguali)" : dubAt.isEmpty ? "Montaggio diverso in \(diff.count) punt\(diff.count == 1 ? "o" : "i")" : "Lo scarto cambia in \(diff.count) punt\(diff.count == 1 ? "o" : "i")") + ":"); l += diff.map { "  – " + $0 } }
         let good = points.filter(\.good); if !good.isEmpty { l.append(String(format: "Allineamento controllato in %d tratti di tutto il film: scarto massimo dentro ogni parte %.0f ms", good.count, spread * 1000)) }
         for (i, n) in nudges.sorted(by: { $0.key < $1.key }) where abs(n) > 0.0005 && segments.indices.contains(i) { l.append(String(format: "Correzione a mano dopo il controllo a vista: audio %@ di %.0f ms %@", n > 0 ? "anticipato" : "ritardato", abs(n) * 1000, segments.count > 1 ? "da \(hms(segments[i].start)) a \(hms(segments[i].end))" : "in tutto il film")) }
         l.append("Riferimento: \(refLabel)"); l += notes
@@ -328,6 +337,64 @@ func composeSegments(_ a: [MergeSegment], _ b: [MergeSegment]) -> [MergeSegment]
     return clean
 }
 
+/// Tagli d'inquadratura (secondi, tempo del file) nel tratto [from, from + len): fotogrammi molto diversi dal precedente, a bassa risoluzione.
+func sceneCuts(_ path: String, from: Double, len: Double) -> [Double] {
+    guard let ff = tool("ffmpeg") else { return [] }
+    let s = max(0, from); var out: [Double] = [], t = 0.0
+    let o = run(ff, ["-nostats", "-hide_banner", "-hwaccel", "videotoolbox", "-ss", String(format: "%.3f", s), "-t", String(format: "%.3f", len), "-i", path, "-map", "0:v:0", "-an", "-sn", "-vf", "scale=160:-2,scdet=threshold=5,metadata=mode=print:file=-", "-f", "null", "-"])
+    for l in o.text.split(separator: "\n") {
+        if let m = String(l).match(#"pts_time:([\d.]+)"#) { t = Double(m[1]) ?? 0 }
+        else if l.hasPrefix("lavfi.scd.score="), (Double(l.dropFirst(16)) ?? 0) >= 5 { out.append(s + t) }
+    }
+    return out
+}
+/// Scarto dell'immagine (altra copia − copia scelta) dai tagli che si corrispondono, cercato vicino agli scarti attesi; nil con meno di 2 tagli in comune.
+func cutOffset(_ b: [Double], _ a: [Double], near: [Double]) -> Double? {
+    func e(_ n: [Double], _ v: Double) -> Double { n.map { abs(v - $0) }.min() ?? 1e9 }
+    var offs: [Double] = []
+    for x in b { if let y = a.min(by: { e(near, $0 - x) < e(near, $1 - x) }), e(near, y - x) < 0.3 { offs.append(y - x) } }
+    guard offs.count >= 2 else { return nil }
+    // il valore con più tagli entro mezzo fotogramma
+    let best = offs.max { a, b in offs.filter { abs($0 - a) < 0.021 }.count < offs.filter { abs($0 - b) < 0.021 }.count }!
+    let c = offs.filter { abs($0 - best) < 0.021 }; guard c.count >= 2 else { return nil }
+    return c.sorted()[c.count / 2]
+}
+/// Ai cambi di scarto guarda le immagini: se i tagli d'inquadratura delle due copie restano allo stesso posto prima e dopo, il montaggio è uguale
+/// e a cambiare è il doppiaggio dell'altra copia. Restituisce le parti in cui è così e lo scarto dell'immagine trovato.
+func pictureCheck(v: MergeSource, o: MergeSource, segs: [MergeSegment], progress: @escaping (Double) -> Void = { _ in }) -> (dub: Set<Int>, checked: Int, video: [Double]) {
+    var jobs: [(i: Int, t: Double, dp: Double, dn: Double)] = []
+    for (i, s) in segs.enumerated() where i > 0 {
+        guard let dp = segs[..<i].last(where: { $0.d != nil })?.d, let dn = (s.d ?? segs[i...].first(where: { $0.d != nil })?.d), abs(dn - dp) < 2 else { continue }
+        jobs.append((i, s.start, dp, dn))
+    }
+    guard !jobs.isEmpty else { return ([], 0, []) }
+    jobs.sort { abs($0.dn - $0.dp) > abs($1.dn - $1.dp) }   // prima i salti più grandi, i più facili da riconoscere
+    var dub = Set<Int>(), video: [Double] = [], checked = 0, done = 0; let lock = NSLock()
+    let total = min(jobs.count, 24)
+    for batch in stride(from: 0, to: total, by: 8) {
+        let q = OperationQueue(); q.maxConcurrentOperationCount = 4
+        for j in jobs[batch..<min(batch + 8, total)] {
+            q.addOperation {
+                let w = 15.0, end = segs[j.i].d == nil ? segs[j.i].end : j.t   // dopo un tratto di silenzio si guarda dopo la sua fine
+                let bc = sceneCuts(v.url.path, from: j.t - w, len: (end - j.t) + 2 * w)
+                let ac = sceneCuts(o.url.path, from: min(j.t + j.dp, j.t + j.dn) - w - 1, len: (end - j.t) + 2 * w + abs(j.dn - j.dp) + 2)
+                let before = cutOffset(bc.filter { $0 < j.t - 0.3 }, ac, near: [j.dp, j.dn]), after = cutOffset(bc.filter { $0 > end + 0.3 }, ac, near: [j.dp, j.dn])
+                lock.lock(); defer { lock.unlock() }
+                done += 1; progress(Double(done) / Double(total))
+                guard let vb = before, let va = after else { return }
+                checked += 1; video += [vb, va]
+                if abs(va - vb) < 0.03 && abs(j.dn - j.dp) > 0.04 { dub.insert(j.i) }   // stesso montaggio, l'audio invece salta: è il doppiaggio
+            }
+        }
+        q.waitUntilAllOperationsAreFinished()
+        // con almeno 6 cambi controllati, tutti del doppiaggio e con l'immagine sempre allo stesso scarto, il montaggio delle due copie è lo stesso in tutto il film
+        if checked >= 6, dub.count == checked, let lo = video.min(), let hi = video.max(), hi - lo < 0.045 {
+            return (Set(segs.indices.dropFirst()), checked, video)
+        }
+    }
+    return (dub, checked, video)
+}
+
 /// Allinea l'audio dell'altra copia (`o`) all'immagine della copia scelta (`v`): velocità (frame rate diversi), spostamento iniziale e, se le copie hanno un montaggio
 /// diverso, i punti in cui saltare un pezzo o lasciare silenzio. Ogni parte viene controllata in tutto il film.
 func alignAudio(v: MergeSource, o: MergeSource, oTrack: MergeTrack, progress: @escaping (Double, String) -> Void = { _, _ in }) -> AlignOutcome {
@@ -386,10 +453,25 @@ func alignAudio(v: MergeSource, o: MergeSource, oTrack: MergeTrack, progress: @e
                 else { extra.append("Nell'altra copia il doppiaggio è a tempo con la traccia in \(langLabel(mt.effLang))") }
             } else { extra.append("Non ho potuto misurare il doppiaggio rispetto alla traccia in \(langLabel(mt.effLang)) nell'altra copia (\(ib.why ?? "misure discordanti")): lo considero a tempo, controlla l'anteprima") }
         }
+        var dubAt = Set<Int>()
+        if segs.count > 1 && abs(k - 1) < 1e-6 && !CommandLine.arguments.contains("--no-picture") {
+            progress(0.93, "Guardo le immagini nei punti in cui lo scarto cambia…")
+            let pc = pictureCheck(v: v, o: o, segs: segs) { progress(0.93 + 0.06 * $0, "Guardo le immagini nei punti in cui lo scarto cambia…") }
+            dubAt = pc.dub
+            if pc.checked > 0 {
+                let vs = pc.video.sorted(), vc = vs[vs.count / 2], same = vs.last! - vs.first! < 0.045
+                let off = segs.compactMap(\.d).map { $0 - vc }, lo = off.min() ?? 0, hi = off.max() ?? 0
+                if pc.dub.count >= pc.checked && same {
+                    extra.append(String(format: "Immagini controllate in %d punti in cui lo scarto cambia: i tagli d'inquadratura delle due copie sono sempre allo stesso posto, quindi il montaggio è uguale in tutto il film. A cambiare è il doppiaggio dell'altra copia, che già nel suo file non è a tempo con l'immagine (fuori fino a %.0f ms): qui viene rimesso a tempo tratto per tratto", pc.checked, max(abs(lo), abs(hi)) * 1000))
+                } else if !pc.dub.isEmpty {
+                    extra.append("Immagini controllate in \(pc.checked) punti in cui lo scarto cambia: in \(pc.dub.count) il montaggio è uguale e a cambiare è il doppiaggio dell'altra copia, negli altri le copie sono montate in modo diverso")
+                } else { extra.append("Immagini controllate in \(pc.checked) punti in cui lo scarto cambia: le due copie sono montate in modo diverso") }
+            }
+        }
         progress(1, "Allineamento trovato")
         let label = viaShared ? "\(langLabel(rt.effLang)) di tutte e due le copie (audio \(rt.ord + 1) e audio \(mt.ord + 1)): la traccia scelta sta nello stesso file e si sposta allo stesso modo"
                               : "audio \(rt.ord + 1) del film con l'immagine (\(langLabel(rt.effLang)))"
-        return .ok(Alignment(k: k, segments: segs, points: pts, refLabel: label, refOrd: rt.ord, speedLabel: speedLabel, spread: spread, measOrd: viaShared ? mt.ord : nil, notes: extra))
+        return .ok(Alignment(k: k, segments: segs, points: pts, refLabel: label, refOrd: rt.ord, speedLabel: speedLabel, spread: spread, measOrd: viaShared ? mt.ord : nil, notes: extra, dubAt: dubAt))
     }
     return lastFail
 }
