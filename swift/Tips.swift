@@ -245,5 +245,46 @@ func retimeDubFromOther(_ s: [MergeSource], _ c: DubCheck, output: URL? = nil, p
         try? FileManager.default.removeItem(at: out); return FixResult(ok: false, message: "Non riesco a scrivere la copia corretta.", lines: r.lines)
     }
     progress(1, "Fatto")
-    return FixResult(ok: true, message: "Doppiaggio rimesso a tempo: «\(out.lastPathComponent)», con l'immagine di «\(W.url.lastPathComponent)» (\(fmtBytes(np.size))). Le due copie non sono state toccate.", lines: ["Riferimento: \(refName), spostato di \(String(format: "%+.3f", -c.picture)) s sull'immagine di questa copia"] + r.lines, newURL: out)
+    return FixResult(ok: true, message: "Doppiaggio rimesso a tempo: «\(out.lastPathComponent)», con l'immagine di «\(W.url.lastPathComponent)» (\(fmtBytes(np.size))). Le due copie non sono state toccate." + (r.doubts.isEmpty ? "" : " \(r.doubts.count) tratt\(r.doubts.count == 1 ? "o" : "i") da guardare a occhio: la misura non decide."), lines: ["Riferimento: \(refName), spostato di \(String(format: "%+.3f", -c.picture)) s sull'immagine di questa copia"] + r.lines, newURL: out, doubts: r.doubts, doubtTrack: r.doubtTrack)
+}
+
+// MARK: tratti in cui la sincronia del doppiaggio non si può misurare con certezza
+/// Un tratto da guardare a occhio: la musica e gli effetti si somigliano bene con più scarti diversi (di solito ±1 battuta della musica, 100–150 ms),
+/// oppure si somigliano poco. `options`: gli spostamenti da provare (secondi, positivo = l'audio arriva prima), il primo è il più probabile.
+struct AudioShift: Hashable { var start: Double; var end: Double; var shift: Double }   // shift > 0: l'audio di quel tratto arriva prima
+struct DubDoubt: Identifiable, Hashable { var id: Double { start }; var start: Double; var end: Double; var options: [Double]; var weak: Bool; var rival = 0.0; var best = 0.0 }   // rival: somiglianza dell'alternativa migliore rispetto al picco (1 = pari); best: somiglianza del picco
+
+/// Scorre il film a finestre di 20 s ogni 10 s e per ognuna guarda la somiglianza tra doppiaggio e riferimento a tutti gli scarti entro ±300 ms:
+/// una finestra è certa se il picco migliore è vicino a zero e nessun altro picco gli si avvicina.
+func dubDoubts(ref: (String, Int), dub: (String, Int), duration: Double) -> [DubDoubt] {
+    var er: [Float] = [], ed: [Float] = []; let g = DispatchGroup()
+    g.enter(); DispatchQueue.global().async { er = fullEnvelope(ref.0, track: ref.1, duration: duration); g.leave() }
+    g.enter(); DispatchQueue.global().async { ed = fullEnvelope(dub.0, track: dub.1, duration: duration); g.leave() }
+    g.wait()
+    struct W { var t: Double; var peaks: [(d: Double, c: Double)]; var bad: Bool; var weak: Bool }
+    var ws: [W] = []; var t = 5.0; let L = 20.0
+    while t + L < duration - 5 {
+        let prof = stride(from: -0.3, through: 0.3001, by: 0.01).map { d in (d: d, c: localCorr(er, ed, t: t, len: L, d: d)) }
+        var peaks: [(d: Double, c: Double)] = []
+        for i in prof.indices where (i == 0 || prof[i].c >= prof[i - 1].c) && (i == prof.count - 1 || prof[i].c > prof[i + 1].c) { peaks.append(prof[i]) }
+        peaks.sort { $0.c > $1.c }
+        let best = peaks.first ?? (0, 0), rivals = peaks.dropFirst().filter { abs($0.d - best.d) >= 0.05 && abs($0.d - best.d) <= 0.25 && $0.c >= 0.85 * best.c }
+        let weak = best.c < 0.12   // musica ed effetti quasi assenti (dialoghi soli): non si misura, vale lo scarto dei tratti vicini
+        ws.append(W(t: t, peaks: [best] + rivals, bad: !weak && (!rivals.isEmpty || abs(best.d) > 0.03), weak: weak))
+        t += 10
+    }
+    // finestre dubbie vicine diventano un tratto; gli scarti da provare sono quelli dei picchi, arrotondati al centesimo
+    var out: [DubDoubt] = []
+    for w in ws where w.bad {
+        var opts: [Double] = []
+        for p in w.peaks { let x = (-p.d * 100).rounded() / 100; if !opts.contains(where: { abs($0 - x) < 0.02 }) { opts.append(x) } }   // −d: d > 0 vuol dire che il doppiaggio arriva dopo, quindi va anticipato
+        if var last = out.last, w.t <= last.end + 10 {
+            last.end = w.t + L; last.weak = last.weak && w.weak; last.rival = max(last.rival, w.peaks.count > 1 ? w.peaks[1].c / max(1e-6, w.peaks[0].c) : 0); last.best = max(last.best, w.peaks[0].c)
+            for x in opts where !last.options.contains(where: { abs($0 - x) < 0.02 }) { last.options.append(x) }
+            out[out.count - 1] = last
+        } else { out.append(DubDoubt(start: w.t, end: w.t + L, options: opts, weak: w.weak, rival: w.peaks.count > 1 ? w.peaks[1].c / max(1e-6, w.peaks[0].c) : 0, best: w.peaks[0].c)) }
+    }
+    // l'attuale (0) è sempre tra le scelte; i tratti con il solo zero e somiglianza buona non sono dubbi
+    let all = out.map { x -> DubDoubt in var x = x; x.options = Array(x.options.prefix(3)); if !x.options.contains(where: { abs($0) < 0.015 }) { x.options.append(0) }; return x }
+    return all.filter { abs($0.options[0]) >= 0.015 } + all.filter { abs($0.options[0]) < 0.015 }   // prima i tratti in cui la misura preferisce uno spostamento
 }

@@ -10,6 +10,7 @@ struct FixPlan {
     var cleanSubs: Set<Int> = [], dropSubs: Set<Int> = [], dropAudio: Set<Int> = [], normalize: Set<Int> = [], boostCenter: Set<Int> = [], levelGain: Set<Int> = [], toDolby: Set<Int> = []
     var syncSubs: [Int: (a: Double, b: Double)] = [:]   // sottotitoli da risincronizzare: tempo nuovo = a·tempo + b
     var retimeDub: [Int: Int] = [:]                     // doppiaggio → traccia originale dello stesso file su cui rimetterlo a tempo, tratto per tratto
+    var shiftAudio: [Int: [AudioShift]] = [:]           // tratti di una traccia da spostare a mano (scelti guardando le labbra)
     var rename: String?                                  // nuovo nome del file (senza estensione)
     var repairSubs: Set<Int> = []                       // sottotitoli con accenti rovinati (doppia codifica) da riparare
     var forcedFlags: [Int: Bool] = [:]                  // etichetta «forzati» da impostare o togliere
@@ -18,9 +19,9 @@ struct FixPlan {
     var clearTitle = false                              // toglie il titolo dai metadati del contenitore
     var deinterlace = false                            // deinterlacciamento dell'immagine (ricodifica del video)
     var centerDB = 4.0                                 // quanto alzare il canale centrale
-    var audioTouched: Set<Int> { normalize.union(boostCenter).union(levelGain).union(toDolby).union(retimeDub.keys) }
+    var audioTouched: Set<Int> { normalize.union(boostCenter).union(levelGain).union(toDolby).union(retimeDub.keys).union(shiftAudio.keys) }
     var eraseText: [EraseRegion] = []                  // scritte da cancellare dall'immagine (ricodifica solo il tratto in cui compaiono)
-    var changesContent: Bool { !cleanSubs.isEmpty || !dropSubs.isEmpty || !dropAudio.isEmpty || !normalize.isEmpty || !boostCenter.isEmpty || !levelGain.isEmpty || !toDolby.isEmpty || !retimeDub.isEmpty || !syncSubs.isEmpty || !repairSubs.isEmpty || deinterlace || tonemap || !eraseText.isEmpty }
+    var changesContent: Bool { !cleanSubs.isEmpty || !dropSubs.isEmpty || !dropAudio.isEmpty || !normalize.isEmpty || !boostCenter.isEmpty || !levelGain.isEmpty || !toDolby.isEmpty || !retimeDub.isEmpty || !shiftAudio.isEmpty || !syncSubs.isEmpty || !repairSubs.isEmpty || deinterlace || tonemap || !eraseText.isEmpty }
     var isEmpty: Bool { !changesContent && !clearTitle && setTitle == nil && audioDefault == nil && subDefault == .keep && lang.isEmpty && forcedFlags.isEmpty }
     mutating func merge(_ h: FixHint) {
         switch h {
@@ -66,6 +67,7 @@ extension FixPlan {
         for i in dropSubs.sorted() { l.append("Eliminare i \(s(i))") }
         for i in dropAudio.sorted() { l.append("Eliminare la traccia \(a(i))") }
         for (i, r) in retimeDub.sorted(by: { $0.key < $1.key }) { l.append("Rimettere a tempo il doppiaggio \(a(i)) sulla traccia \(a(r)), tratto per tratto (ricodifica in Dolby Digital)") }
+        for (i, v) in shiftAudio.sorted(by: { $0.key < $1.key }) { l.append("Spostare la traccia \(a(i)) in \(v.count) tratt\(v.count == 1 ? "o" : "i"): " + v.map { String(format: "%@–%@ %.0f ms %@", hms($0.start), hms($0.end), abs($0.shift) * 1000, $0.shift > 0 ? "prima" : "dopo") }.joined(separator: ", ") + " (ricodifica in Dolby Digital)") }
         for i in toDolby.sorted() { l.append("Convertire in Dolby Digital (AC-3) la traccia \(a(i))") }
         for i in levelGain.sorted() { l.append("Portare a -24 LUFS il volume della traccia \(a(i)) (guadagno fisso)") }
         for i in boostCenter.sorted() { l.append(String(format: "Alzare i dialoghi (centro +%.0f dB) nella traccia %@", centerDB, a(i))) }
@@ -76,7 +78,7 @@ extension FixPlan {
         return l
     }
 }
-struct FixResult { var ok: Bool; var message: String; var lines: [String] = []; var backup: URL?; var newURL: URL?; var badTime: Double? = nil }   // badTime: il momento da guardare se la verifica non passa
+struct FixResult { var ok: Bool; var message: String; var lines: [String] = []; var backup: URL?; var newURL: URL?; var badTime: Double? = nil; var doubts: [DubDoubt] = []; var doubtTrack: Int? = nil }   // doubts: tratti del doppiaggio rimesso a tempo da guardare a occhio (traccia doubtTrack del file nuovo)   // badTime: il momento da guardare se la verifica non passa
 
 /// Filtro validato per "musica troppo forte, dialoghi troppo bassi" (vedi la libreria film): livella la dinamica e limita i picchi.
 /// Livello obiettivo della regolazione a guadagno fisso (cinema/streaming: -24 LUFS integrati).
@@ -236,6 +238,23 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
             lines.append(String(format: "Audio %d: doppiaggio rimesso a tempo sulla traccia %d in %d tratti (correzioni da %+.0f a %+.0f ms)", k + 1, ref + 1, ds.count, -(ds.max() ?? 0) * 1000, -(ds.min() ?? 0) * 1000))
         }
     }
+    // tratti spostati a mano: la traccia si ricostruisce con lo stesso montaggio a pezzi, spostando solo quei tratti
+    if !plan.shiftAudio.isEmpty, let src = loadMergeSource(url, src: 0) {
+        for (k, v) in plan.shiftAudio.sorted(by: { $0.key < $1.key }) where retimed[k] == nil {
+            guard let t = src.tracks.first(where: { $0.kind == "a" && $0.ord == k }) else { return FixResult(ok: false, message: "Traccia da spostare non valida.") }
+            var segs: [MergeSegment] = [], at = 0.0
+            for x in v.sorted(by: { $0.start < $1.start }) where x.start >= at && x.end > x.start {
+                if x.start > at { segs.append(MergeSegment(start: at, end: x.start, d: 0)) }
+                segs.append(MergeSegment(start: x.start, end: x.end, d: x.shift)); at = x.end
+            }
+            segs.append(MergeSegment(start: at, end: pr.duration, d: 0))
+            let f = work.appendingPathComponent("shift\(k).mka"), pg = pieceGraph(src, t, k: 1, segs: segs, from: 0, to: pr.duration, firstInput: 0, outLabel: "o")
+            progress(0.03, "Sposto i tratti scelti della traccia \(k + 1)…")
+            guard run(ff, ["-nostdin", "-y", "-v", "error"] + pg.inputs + ["-filter_complex", pg.graph, "-map", "[o]", "-c:a", "flac", f.path]).status == 0 else { return FixResult(ok: false, message: "Non riesco a ricostruire la traccia \(k + 1). Il file non è stato toccato.") }
+            inputs += ["-i", f.path]; retimed[k] = extra.count + retimed.count + 1
+            lines.append("Audio \(k + 1): " + v.map { String(format: "da %@ a %@ %.0f ms %@", hms($0.start), hms($0.end), abs($0.shift) * 1000, $0.shift > 0 ? "prima" : "dopo") }.joined(separator: "; "))
+        }
+    }
     // misure sull'originale: servono per calcolare il guadagno e per controllare dopo che l'audio non sia peggiorato
     var beforeLoud: [Int: (Double, Double, Double)] = [:], beforeDial: [Int: DialogueStats] = [:], gains: [Int: Double] = [:]
     for k in plan.audioTouched.sorted() {
@@ -336,6 +355,7 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
             return FixResult(ok: false, message: "Correzione dell'immagine annullata: \(why). Il file non è stato toccato.", lines: lines)
         }
     }
+    var doubts: [DubDoubt] = [], doubtTrack: Int?
     for k in plan.audioTouched.sorted() {
         let outOrd = (0..<k).filter { !plan.dropAudio.contains($0) }.count
         progress(0.85 + 0.1 * Double(outOrd) / Double(max(1, plan.audioTouched.count)), "Controllo del risultato (traccia \(k + 1))…")
@@ -350,6 +370,9 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
             let bad = sg.filter { ($0.d ?? 0) > syncLateTol || ($0.d ?? 0) < -syncEarlyTol }, ds = sg.compactMap(\.d)
             lines.append(String(format: "Audio %d dopo: scarto dal riferimento da %+.0f a %+.0f ms in tutto il film", k + 1, (ds.min() ?? 0) * 1000, (ds.max() ?? 0) * 1000))
             if bad.reduce(0, { $0 + $1.end - $1.start }) > 30 { return reject("il doppiaggio non risulta ancora a tempo (es. da \(hms(bad[0].start)) a \(hms(bad[0].end)))") }
+            progress(0.9, "Cerco i tratti in cui la sincronia non si può misurare con certezza…")
+            doubts = dubDoubts(ref: (tmp.path, refOut), dub: (tmp.path, outOrd), duration: np.duration); doubtTrack = outOrd
+            if !doubts.isEmpty { lines.append("Da guardare a occhio (la misura non decide): " + doubts.map { "\(hms($0.start))–\(hms($0.end))" }.joined(separator: ", ")) }
         }
         if (plan.toDolby.contains(k) || plan.retimeDub[k] != nil), plan.levelGain.isDisjoint(with: [k]), abs(af.0 - b.0) > 1.0 { return reject(String(format: "la conversione avrebbe cambiato il volume (da %.1f a %.1f LUFS)", b.0, af.0)) }
         if plan.levelGain.contains(k), abs(af.0 - levelTarget) > 2.5 { return reject(String(format: "il volume ottenuto (%.1f LUFS) è lontano dall'obiettivo (%.0f)", af.0, levelTarget)) }
@@ -374,5 +397,5 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
         }
     } catch { return FixResult(ok: false, message: "Salvataggio non riuscito: \(error.localizedDescription). L'originale non è stato toccato.") }
     progress(1, "Fatto")
-    return FixResult(ok: true, message: (inPlace ? "Copia corretta aggiornata." : "Creata «\(output.lastPathComponent)». L'originale non è stato toccato.") + warn, lines: lines, backup: nil, newURL: output)
+    return FixResult(ok: true, message: (inPlace ? "Copia corretta aggiornata." : "Creata «\(output.lastPathComponent)». L'originale non è stato toccato.") + warn, lines: lines, backup: nil, newURL: output, doubts: doubts, doubtTrack: doubtTrack)
 }

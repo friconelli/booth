@@ -312,6 +312,9 @@ try:
     cf = os.path.join(T, "tagli_ita_a_tempo.mkv"); r = subprocess.run([BIN, "--dub-from", ca, cb, "--output", cf], capture_output=True, text=True)
     check(r.returncode == 0 and os.path.exists(cf) and [s["codec_type"] for s in probe(cf)["streams"]] == ["video", "audio"] and all(abs(sync(cf, t)) < 0.03 for t in (100, 300)),
           f"doppiaggio rimesso a tempo con l'originale dell'altra copia, tenendo l'immagine e il peso della copia italiana ({sync(cf, 300) * 1000 if os.path.exists(cf) else 0:+.0f} ms a 5:00)")
+    check("Da guardare a occhio" not in r.stdout, "doppiaggio rimesso a tempo con musica ed effetti netti: nessun tratto da guardare a occhio")
+    rc, o = fixcopy(ca, "--shift-audio", "0:200:400:0.12"); sh = os.path.join(T, "tagli_ita (corretto).mkv")
+    check(rc == 0 and "120 ms prima" in o and os.path.exists(sh) and all(abs(sync(sh, t)) < 0.03 for t in (100, 190, 300)), "spostamento a mano di un tratto (da 3:20, 120 ms prima): tutto il film a tempo")
     other = film("altro_film.mkv", "640x360", "24000/1001", f"anoisesrc=d={DM}:c=brown:a=0.5:r=48000,{gate(55.55, 6)},aformat=channel_layouts=stereo", "ita", DM)
     rc, o = merge(best, other, "--audio", "b0", "--output", os.path.join(T, "altro.mkv"))
     check(rc != 0 and "NON ALLINEATO" in o and not os.path.exists(os.path.join(T, "altro.mkv")), "film diverso: unione rifiutata, nessun file creato")

@@ -11,7 +11,7 @@ final class Job: ObservableObject, Identifiable {
     init(_ u: URL) { url = u }
 }
 final class Store: ObservableObject {
-    @Published var jobs: [Job] = []; @Published var selection: UUID?; @Published var modelProgress: Double?; @Published var comparePair: ComparePair?; @Published var compareBusy = false; @Published var compareStatus = ""; @Published var compareProgress = 0.0; @Published var mergeRequest: MergeRequest?; @Published var better: BetterVerdict?
+    @Published var jobs: [Job] = []; @Published var selection: UUID?; @Published var modelProgress: Double?; @Published var comparePair: ComparePair?; @Published var compareBusy = false; @Published var compareStatus = ""; @Published var compareProgress = 0.0; @Published var mergeRequest: MergeRequest?; @Published var better: BetterVerdict?; @Published var doubtRequest: DoubtRequest?
     private let q = DispatchQueue(label: "analisi")   // un film alla volta: le analisi usano già tutti i core
     static let exts: Set<String> = ["mp4", "mkv", "avi", "m4v", "mov"]
     func add(_ urls: [URL]) {
@@ -76,6 +76,7 @@ final class Store: ObservableObject {
             DispatchQueue.main.async {
                 if r.ok { if j.origURL == nil { j.origURL = orig; j.origReport = origReport }; j.url = target; j.fixLog += r.lines }
                 j.fixResult = r; j.fixProgress = nil; if let rep = rep { j.report = rep; setVerdictTag(target, ok: rep.essential.isEmpty) }
+                self.offerDoubts(r)
             }
         }
     }
@@ -116,6 +117,7 @@ final class Store: ObservableObject {
             DispatchQueue.main.async {
                 if r.ok, let ar = after { if j.origURL == nil { j.origURL = orig; j.origReport = origReport }; j.url = output; j.fixLog += r.lines; j.report = ar; setVerdictTag(output, ok: ar.essential.isEmpty) }
                 j.fixResult = r; j.fixProgress = nil
+                self.offerDoubts(r)
             }
         }
     }
@@ -167,6 +169,11 @@ final class Store: ObservableObject {
             }
         }
     }
+    /// Dopo un doppiaggio rimesso a tempo: i tratti in cui la misura non decide si guardano e si sistemano a mano.
+    func offerDoubts(_ r: FixResult) {
+        guard r.ok, !r.doubts.isEmpty, let u = r.newURL, let k = r.doubtTrack else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.doubtRequest = DoubtRequest(url: u, track: k, doubts: r.doubts) }
+    }
     /// Rimette a tempo il doppiaggio della copia italiana con l'originale dell'altra copia; il risultato si apre e si ricontrolla come ogni film.
     func fixDub(_ urls: [URL], _ d: DubCheck) {
         guard !compareBusy, let x = loadMergeSource(urls[0], src: 0), let y = loadMergeSource(urls[1], src: 1) else { return }
@@ -177,6 +184,7 @@ final class Store: ObservableObject {
                 self?.compareBusy = false
                 let a = NSAlert(); a.messageText = r.ok ? "Doppiaggio rimesso a tempo" : "Doppiaggio non corretto"; a.informativeText = r.message + (r.lines.isEmpty ? "" : "\n\n" + r.lines.suffix(6).joined(separator: "\n")); a.runModal()
                 if let u = r.newURL { self?.add([u]) }
+                self?.offerDoubts(r)
             }
         }
     }
@@ -202,6 +210,10 @@ final class Store: ObservableObject {
         onlineLookups = UserDefaults.standard.bool(forKey: "metaConsent")   // il consenso dato in precedenza vale anche ai prossimi avvii
         let e = ProcessInfo.processInfo.environment   // solo per le prove a vista
         if let a = e["BOOTH_MERGE_A"], let b = e["BOOTH_MERGE_B"] { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.mergeRequest = MergeRequest(urls: [URL(fileURLWithPath: a), URL(fileURLWithPath: b)]) } }
+        if let f = e["BOOTH_DOUBTS"], let l = e["BOOTH_DOUBTS_LIST"] {   // prove a vista: «200-230:0,0.12;300-320:0,-0.11» sulla traccia 0 del file
+            let ds = l.split(separator: ";").compactMap { x -> DubDoubt? in let p = x.split(separator: ":"); let r = p[0].split(separator: "-").compactMap { Double($0) }; guard p.count == 2, r.count == 2 else { return nil }; return DubDoubt(start: r[0], end: r[1], options: p[1].split(separator: ",").compactMap { Double($0) }, weak: false) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.doubtRequest = DoubtRequest(url: URL(fileURLWithPath: f), track: 0, doubts: ds) }
+        }
         if let a = e["BOOTH_COMPARE_A"], let b = e["BOOTH_COMPARE_B"] { DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.compare([URL(fileURLWithPath: a), URL(fileURLWithPath: b)]) } }
     }
     func open() { guard !compareBusy else { return }; let p = NSOpenPanel(); p.allowsMultipleSelection = true; p.canChooseDirectories = true; p.message = "Scegli uno o più film"; if p.runModal() == .OK { add(p.urls) } }
@@ -227,6 +239,8 @@ struct ContentView: View {
         .sheet(item: $store.better) { v in BetterView(v: v, sideBySide: { store.better = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.comparePair = ComparePair(before: v.urls[0], beforeReport: v.reports[0], after: v.urls[1], afterReport: v.reports[1]) } },
                                                          merge: { store.better = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.mergeRequest = MergeRequest(urls: v.urls) } },
                                                          fixDub: { store.better = nil; if let d = v.dub { store.fixDub(v.urls, d) } }) }
+        .sheet(item: $store.doubtRequest) { req in DoubtView(req: req) { r in
+            if r?.ok == true, let j = store.jobs.first(where: { $0.url.standardizedFileURL == req.url.standardizedFileURL }) { j.fixLog += r?.lines ?? []; store.startAnalysis(j) } } }
         .sheet(item: $store.comparePair) { pair in CompareView(pair: pair, swap: { store.comparePair = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.comparePair = pair.swapped } }) }
         .onDrop(of: [.fileURL], isTargeted: $hover) { ps in
             guard !store.compareBusy else { return false }
