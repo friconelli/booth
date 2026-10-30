@@ -1,6 +1,5 @@
 # Booth
 
-(Fino alla 0.1 si chiamava *Movie Preflight*: al primo avvio Booth riprende le impostazioni e il modello vocale della vecchia app.)
 
 App Mac (Swift/SwiftUI, come Dolly) che controlla un film prima della proiezione: si trascina un mp4/mkv/avi (o più file, o una cartella) e restituisce dati tecnici e segnalazioni su immagine, audio e sottotitoli. Sa anche **unire due copie** dello stesso film: l'immagine migliore da una e l'audio italiano dall'altra, allineati in automatico e controllati a vista.
 
