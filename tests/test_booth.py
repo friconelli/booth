@@ -69,6 +69,9 @@ try:
     o = analyze(video("hdr.mkv", extra=["-x264-params", "colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"])); check("HDR (PQ)" in o, "HDR segnalato")
     o = analyze(video("lbx.mkv", vf="crop=640:272,pad=640:360:0:44")); check("Bande nere incorporate" in o, "bande nere incorporate")
     o = analyze(video("title.mkv", meta=["title=www.torrent-site.com - Film"])); check("titolo nei metadati contiene pubblicità" in o, "titolo con pubblicità")
+    tl = os.path.join(T, "title.mkv"); before = set(os.listdir(T)); r = subprocess.run([BIN, "--prepare", tl], capture_output=True, text=True)
+    check(r.returncode == 0 and "nel film stesso" in r.stdout and set(os.listdir(T)) - before == {"title — scheda per la sala.txt"} and subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags=title", "-of", "csv=p=0", tl], capture_output=True, text=True).stdout.strip() == "title",
+          "«Prepara per la sala» con sole impostazioni: titolo cambiato nel film stesso, nessuna nuova versione")
     o = analyze(video("blk.mkv", vf="fade=in:st=0:d=0.1,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(t,0,15)'")); check("Nero iniziale lungo" in o, "nero iniziale")
     o = analyze(video("il.mkv", vf="interlace=scan=tff", extra=["-flags", "+ilme+ildct"])); check("interlacciat" in o.lower(), "video interlacciato")
     avi = os.path.join(T, "film.avi"); ff("-f", "lavfi", "-i", f"testsrc2=s=640x360:r=25:d={D}", "-f", "lavfi", "-i", "sine=d=%d" % D, "-c:v", "mpeg4", "-c:a", "mp3", avi)

@@ -115,7 +115,7 @@ struct JobDetail: View {
             let notes = r.visible.filter { $0.fixes.isEmpty && $0.sev == .info }
             ScrollView { VStack(alignment: .leading, spacing: 18) {
                 header(r)
-                if let fr = job.fixResult { FixBanner(result: fr, compare: job.hasCorrected ? { showCompare = true } : nil, reveal: { NSWorkspace.shared.activateFileViewerSelecting([job.url]) }, discard: { store.discardCorrected(job) }) }
+                if let fr = job.fixResult { FixBanner(result: fr, compare: job.hasCorrected && !fr.labelsOnly ? { showCompare = true } : nil, reveal: { NSWorkspace.shared.activateFileViewerSelecting([job.url]) }, discard: { store.discardCorrected(job) }) }
                 if job.fixProgress != nil { HStack(spacing: 10) { ProgressView(value: job.fixProgress).frame(width: 220); Text(job.fixStage).font(.callout).foregroundStyle(.secondary) } }
                 HStack(spacing: 4) { ForEach([(0, "Riepilogo"), (1, "Dettagli")], id: \.0) { t in
                     Button { tab = t.0 } label: { Text(t.1).font(.callout.weight(tab == t.0 ? .semibold : .regular)).padding(.horizontal, 14).padding(.vertical, 5).background(Capsule().fill(tab == t.0 ? Color.secondary.opacity(0.18) : Color.clear)) }.buttonStyle(.plain) } }

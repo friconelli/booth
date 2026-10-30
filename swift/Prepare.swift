@@ -57,18 +57,23 @@ func prepareForScreening(_ url: URL, output: URL? = nil, progress: @escaping (Do
         let sheet = writeScreeningSheet(before, done: [], original: nil)
         return FixResult(ok: pp.unresolved.isEmpty, message: pp.unresolved.isEmpty ? "Il film è già pronto per la sala: niente da correggere." + (sheet.map { " Scheda: «\($0.lastPathComponent)»." } ?? "") : "Booth non può correggere da solo quello che serve.", lines: manual)
     }
-    let out = output ?? correctedURL(for: url)
+    let labelsOnly = output == nil && !pp.plan.changesContent   // solo impostazioni: nel film stesso, senza nuova versione
+    let out = output ?? (labelsOnly ? url : correctedURL(for: url))
+    let bak = url.deletingLastPathComponent().appendingPathComponent(".booth-prima-\(UUID().uuidString.prefix(8)).\(url.pathExtension)")
+    if labelsOnly { try? cloneFile(url, bak) }
+    defer { try? FileManager.default.removeItem(at: bak) }
     var r = applyFix(url, pp.plan, output: out) { p, s in progress(0.3 + p * 0.5, s) }
     guard r.ok else { return r }
     progress(0.85, "Controllo del film corretto…")
     let after = analyze(out) { p, s in progress(0.85 + p * 0.14, s) }
     if let why = checkPrepared(before: before, after: after, fixLines: r.lines) {
+        if labelsOnly { _ = try? FileManager.default.replaceItemAt(out, withItemAt: bak); return FixResult(ok: false, message: "Preparazione annullata: \(why). Il film è tornato com'era.", lines: r.lines) }
         try? FileManager.default.trashItem(at: out, resultingItemURL: nil)
         return FixResult(ok: false, message: "Preparazione annullata: \(why). La copia è stata spostata nel Cestino, l'originale non è stato toccato.", lines: r.lines)
     }
     setVerdictTag(out, ok: after.essential.isEmpty)
-    let sheet = writeScreeningSheet(after, done: pp.plan.summary(before), original: url)
-    r.message = (after.essential.isEmpty ? "Pronto per la sala: «\(out.lastPathComponent)»." : "Migliorato, ma resta qualcosa da guardare: «\(out.lastPathComponent)».") + (sheet.map { " Scheda: «\($0.lastPathComponent)»." } ?? "") + " L'originale non è stato toccato."
+    let sheet = writeScreeningSheet(after, done: pp.plan.summary(before), original: labelsOnly ? nil : url)
+    r.message = (after.essential.isEmpty ? "Pronto per la sala: «\(out.lastPathComponent)»." : "Migliorato, ma resta qualcosa da guardare: «\(out.lastPathComponent)».") + (sheet.map { " Scheda: «\($0.lastPathComponent)»." } ?? "") + (labelsOnly ? " Cambiate solo le impostazioni, nel film stesso." : " L'originale non è stato toccato.")
     r.lines += manual
     progress(1, "Fatto")
     return r

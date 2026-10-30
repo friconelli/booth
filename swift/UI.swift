@@ -59,22 +59,27 @@ final class Store: ObservableObject {
     func fix(_ j: Job, _ plan: FixPlan) {
         var p = plan; let newBase = p.rename; p.rename = nil; if p.setTitle == nil, let n = newBase { p.setTitle = n }   // il titolo nei metadati segue il nuovo nome
         let source = j.url, editing = j.hasCorrected, orig = j.origURL ?? j.url, origReport = j.origReport ?? j.report
-        let output = editing ? j.url : correctedURL(for: j.url, rename: newBase)
+        let labelsOnly = !p.changesContent   // solo impostazioni (titolo, lingue, tracce predefinite, nome): si cambiano nel file stesso, senza nuova versione né confronto
+        let output = editing || labelsOnly ? j.url : correctedURL(for: j.url, rename: newBase)
         j.fixProgress = 0; j.fixStage = "In attesa…"; j.fixResult = nil
         q.async {
             var r: FixResult
             if p.isEmpty {
-                if editing { r = FixResult(ok: true, message: "Nessuna modifica al contenuto.", newURL: output) }
+                if editing || labelsOnly { r = FixResult(ok: true, message: "Nessuna modifica al contenuto.", newURL: output, labelsOnly: labelsOnly) }
                 else { do { try cloneFile(source, output); r = FixResult(ok: true, message: "Creata «\(output.lastPathComponent)» (copia istantanea). L'originale non è stato toccato.", newURL: output) } catch { r = FixResult(ok: false, message: "Non riesco a creare la copia: \(error.localizedDescription)") } }
             } else { r = applyFix(source, p, output: output) { v, s in DispatchQueue.main.async { j.fixProgress = v; j.fixStage = s } } }
-            if r.ok, editing, let nb = newBase {   // rinomina della copia corretta (è un file dell'app, non l'originale)
+            if r.ok, labelsOnly, let nb = newBase {   // nuovo nome: si rinomina il file stesso
+                let (d, e) = renameInPlace(output, to: nb)
+                if let d = d, d != output { r.message = (p.isEmpty ? "" : r.message + " ") + "Rinominato in «\(d.lastPathComponent)»."; r.newURL = d }
+                if let e = e { r = FixResult(ok: false, message: (p.isEmpty ? "" : r.message + " Però: ") + e, lines: r.lines, labelsOnly: true) }
+            } else if r.ok, editing, let nb = newBase {   // rinomina della copia corretta (è un file dell'app, non l'originale)
                 let dest = correctedURL(for: output, rename: nb)
                 if (try? FileManager.default.moveItem(at: output, to: dest)) != nil { r = FixResult(ok: true, message: r.message + " Rinominata in «\(dest.lastPathComponent)».", lines: r.lines, backup: nil, newURL: dest) }
             }
             let target = r.newURL ?? output
             let rep = r.ok ? analyze(target) : nil
             DispatchQueue.main.async {
-                if r.ok { if j.origURL == nil { j.origURL = orig; j.origReport = origReport }; j.url = target; j.fixLog += r.lines }
+                if r.ok { if !labelsOnly, j.origURL == nil { j.origURL = orig; j.origReport = origReport }; j.url = target; if !labelsOnly { j.fixLog += r.lines } }
                 j.fixResult = r; j.fixProgress = nil; if let rep = rep { j.report = rep; setVerdictTag(target, ok: rep.essential.isEmpty) }
                 self.offerDoubts(r)
             }
@@ -93,29 +98,33 @@ final class Store: ObservableObject {
             if a.runModal() == .alertFirstButtonReturn, let u = writeScreeningSheet(rep, done: [], original: j.origURL) { NSWorkspace.shared.activateFileViewerSelecting([u]) }
             return
         }
-        let editing = j.hasCorrected, output = editing ? j.url : correctedURL(for: j.url)
+        let labelsOnly = !pp.plan.changesContent, editing = j.hasCorrected, output = editing || labelsOnly ? j.url : correctedURL(for: j.url)
         a.messageText = "Preparare il film per la sala?"
         a.informativeText = lines.map { "• " + $0 }.joined(separator: "\n") + (manual.isEmpty ? "" : "\n\nDa risolvere a mano o con un'altra copia:\n" + manual.joined(separator: "\n"))
-            + "\n\n" + (editing ? "La copia corretta verrà aggiornata." : "Verrà creata «\(output.lastPathComponent)» accanto al film.") + " Poi Booth la ricontrolla da capo: se qualcosa peggiora la scarta. Accanto al film salva la scheda per la sala. L'originale non viene mai modificato."
+            + "\n\n" + (labelsOnly ? "Sono solo impostazioni: si cambiano direttamente nel film, senza crearne una nuova versione. Poi Booth lo ricontrolla: se qualcosa peggiora rimette tutto com'era. Accanto al film salva la scheda per la sala." : (editing ? "La copia corretta verrà aggiornata." : "Verrà creata «\(output.lastPathComponent)» accanto al film.") + " Poi Booth la ricontrolla da capo: se qualcosa peggiora la scarta. Accanto al film salva la scheda per la sala. L'originale non viene mai modificato.")
         a.addButton(withTitle: "Prepara"); a.addButton(withTitle: "Annulla"); guard a.runModal() == .alertFirstButtonReturn else { return }
         let source = j.url, orig = j.origURL ?? j.url, origReport = j.origReport ?? rep
         j.fixProgress = 0; j.fixStage = "In attesa…"; j.fixResult = nil
+        let bak = source.deletingLastPathComponent().appendingPathComponent(".booth-prima-\(UUID().uuidString.prefix(8)).\(source.pathExtension)")   // per tornare indietro se il ricontrollo non passa
+        if labelsOnly && !editing { try? cloneFile(source, bak) }
         q.async {
+            defer { try? FileManager.default.removeItem(at: bak) }
             var r = applyFix(source, pp.plan, output: output) { v, s in DispatchQueue.main.async { j.fixProgress = v * 0.8; j.fixStage = s } }
             var after: Report?
             if r.ok {
                 DispatchQueue.main.async { j.fixStage = "Ricontrollo il film corretto…" }
                 let ar = analyze(output) { v, _ in DispatchQueue.main.async { j.fixProgress = 0.8 + v * 0.2 } }
                 if let why = checkPrepared(before: rep, after: ar, fixLines: r.lines) {
-                    if !editing { try? FileManager.default.trashItem(at: output, resultingItemURL: nil) }
-                    r = FixResult(ok: false, message: "Preparazione annullata: \(why). " + (editing ? "" : "La copia è nel Cestino; ") + "l'originale non è stato toccato.", lines: r.lines)
+                    if labelsOnly && !editing { _ = try? FileManager.default.replaceItemAt(output, withItemAt: bak) }
+                    else if !editing { try? FileManager.default.trashItem(at: output, resultingItemURL: nil) }
+                    r = FixResult(ok: false, message: "Preparazione annullata: \(why). " + (labelsOnly && !editing ? "Il film è tornato com'era." : (editing ? "" : "La copia è nel Cestino; ") + "l'originale non è stato toccato."), lines: r.lines)
                 } else {
-                    after = ar; let sheet = writeScreeningSheet(ar, done: lines, original: orig)
-                    r.message = (ar.essential.isEmpty ? "Pronto per la sala." : "Migliorato, ma resta qualcosa da guardare.") + (sheet.map { " Scheda salvata: «\($0.lastPathComponent)»." } ?? "") + " L'originale non è stato toccato."
+                    after = ar; let sheet = writeScreeningSheet(ar, done: lines, original: labelsOnly ? nil : orig)
+                    r.message = (ar.essential.isEmpty ? "Pronto per la sala." : "Migliorato, ma resta qualcosa da guardare.") + (sheet.map { " Scheda salvata: «\($0.lastPathComponent)»." } ?? "") + (labelsOnly ? " Cambiate solo le impostazioni, nel film stesso." : " L'originale non è stato toccato.")
                 }
             }
             DispatchQueue.main.async {
-                if r.ok, let ar = after { if j.origURL == nil { j.origURL = orig; j.origReport = origReport }; j.url = output; j.fixLog += r.lines; j.report = ar; setVerdictTag(output, ok: ar.essential.isEmpty) }
+                if r.ok, let ar = after { if !labelsOnly, j.origURL == nil { j.origURL = orig; j.origReport = origReport }; j.url = output; if !labelsOnly { j.fixLog += r.lines }; j.report = ar; setVerdictTag(output, ok: ar.essential.isEmpty) }
                 j.fixResult = r; j.fixProgress = nil
                 self.offerDoubts(r)
             }
@@ -126,8 +135,8 @@ final class Store: ObservableObject {
         guard let rep = j.report else { return }
         let lines = plan.summary(rep); guard !lines.isEmpty else { return }
         let a = NSAlert(); a.messageText = lines.count == 1 ? "Correggere questo?" : "Correggere queste cose?"
-        let dest = j.hasCorrected ? "La copia corretta «\(j.url.lastPathComponent)» verrà aggiornata." : "Verrà creata la copia «\(correctedURL(for: j.url, rename: plan.rename).lastPathComponent)» accanto al film."
-        a.informativeText = lines.map { "• " + $0 }.joined(separator: "\n") + "\n\n" + dest + " L'originale non viene mai modificato e potrai confrontare prima e dopo."
+        let dest = !plan.changesContent ? "Sono solo impostazioni: si cambiano direttamente in «\(j.url.lastPathComponent)», senza creare una nuova versione del film." : j.hasCorrected ? "La copia corretta «\(j.url.lastPathComponent)» verrà aggiornata. L'originale non viene mai modificato e potrai confrontare prima e dopo." : "Verrà creata la copia «\(correctedURL(for: j.url, rename: plan.rename).lastPathComponent)» accanto al film. L'originale non viene mai modificato e potrai confrontare prima e dopo."
+        a.informativeText = lines.map { "• " + $0 }.joined(separator: "\n") + "\n\n" + dest
         a.addButton(withTitle: "Correggi"); a.addButton(withTitle: "Altre opzioni…"); a.addButton(withTitle: "Annulla")
         switch a.runModal() { case .alertFirstButtonReturn: fix(j, plan); case .alertSecondButtonReturn: more(); default: break }
     }

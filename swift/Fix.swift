@@ -78,7 +78,7 @@ extension FixPlan {
         return l
     }
 }
-struct FixResult { var ok: Bool; var message: String; var lines: [String] = []; var backup: URL?; var newURL: URL?; var badTime: Double? = nil; var doubts: [DubDoubt] = []; var doubtTrack: Int? = nil }   // doubts: tratti del doppiaggio rimesso a tempo da guardare a occhio (traccia doubtTrack del file nuovo)   // badTime: il momento da guardare se la verifica non passa
+struct FixResult { var ok: Bool; var message: String; var lines: [String] = []; var backup: URL?; var newURL: URL?; var badTime: Double? = nil; var doubts: [DubDoubt] = []; var doubtTrack: Int? = nil; var labelsOnly = false }   // labelsOnly: cambiate solo le impostazioni (titolo, lingue, tracce predefinite), direttamente nel file   // doubts: tratti del doppiaggio rimesso a tempo da guardare a occhio (traccia doubtTrack del file nuovo)   // badTime: il momento da guardare se la verifica non passa
 
 /// Filtro validato per "musica troppo forte, dialoghi troppo bassi" (vedi la libreria film): livella la dinamica e limita i picchi.
 /// Livello obiettivo della regolazione a guadagno fisso (cinema/streaming: -24 LUFS integrati).
@@ -126,8 +126,18 @@ func correctedURL(for url: URL, rename: String? = nil) -> URL {
     return u
 }
 
-/// Applica le correzioni a `url` scrivendo il risultato in `output`. L'originale non viene mai toccato, tranne quando `output` coincide con `url`
-/// (modifica di una copia corretta che l'app ha già creato).
+/// Rinomina il file stesso (cambio di impostazioni, niente copia): mai sopra un file che esiste già.
+func renameInPlace(_ url: URL, to base: String) -> (url: URL?, error: String?) {
+    let b = base.replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespaces)
+    let dest = url.deletingLastPathComponent().appendingPathComponent(b + "." + url.pathExtension)
+    if b.isEmpty || dest.standardizedFileURL == url.standardizedFileURL { return (url, nil) }
+    if FileManager.default.fileExists(atPath: dest.path) { return (nil, "Esiste già un file chiamato «\(dest.lastPathComponent)»: non lo sovrascrivo.") }
+    do { try FileManager.default.moveItem(at: url, to: dest); return (dest, nil) } catch { return (nil, "Non riesco a rinominare: \(error.localizedDescription)") }
+}
+
+/// Applica le correzioni a `url` scrivendo il risultato in `output`. L'originale non viene toccato, tranne quando `output` coincide con `url`:
+/// modifica di una copia corretta che l'app ha già creato, oppure solo impostazioni (titolo, lingue, tracce predefinite), che si cambiano nel file stesso.
+/// Le impostazioni non hanno bisogno di una nuova versione del film: «Booth crea sempre una copia» vale per le correzioni che cambiano il contenuto.
 func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Double, String) -> Void) -> FixResult {
     let inPlace = output.standardizedFileURL.path == url.standardizedFileURL.path
     guard let ff = tool("ffmpeg"), let fp = tool("ffprobe"), let pr = Probe(url.path) else { return FixResult(ok: false, message: "ffmpeg non trovato o file illeggibile.") }
@@ -167,8 +177,12 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
     // 1) solo etichette in un mkv: si modifica l'intestazione sul posto, senza riscrivere il film
     if !plan.changesContent, ext == "mkv", let mp = tool("mkvpropedit") {
         progress(0.1, "Modifica delle etichette…")
-        if !inPlace { do { try cloneFile(url, output) } catch { return FixResult(ok: false, message: "Non riesco a creare la copia: \(error.localizedDescription)") } }
-        func discard() { if !inPlace { try? FileManager.default.removeItem(at: output) } }
+        // sul posto si tiene un clone istantaneo (APFS, non occupa spazio) per tornare indietro se qualcosa non va
+        let bak = url.deletingLastPathComponent().appendingPathComponent(".booth-prima-\(UUID().uuidString.prefix(8)).\(ext)")
+        if inPlace { do { try cloneFile(url, bak) } catch { return FixResult(ok: false, message: "Non riesco a mettere da parte il file prima di cambiarlo: \(error.localizedDescription)") } }
+        else { do { try cloneFile(url, output) } catch { return FixResult(ok: false, message: "Non riesco a creare la copia: \(error.localizedDescription)") } }
+        defer { try? FileManager.default.removeItem(at: bak) }
+        func discard() { if inPlace { _ = try? FileManager.default.replaceItemAt(output, withItemAt: bak) } else { try? FileManager.default.removeItem(at: output) } }
         var a = [output.path]
         if let t = plan.setTitle { a += ["--edit", "info", "--set", "title=\(t)"] } else if plan.clearTitle { a += ["--edit", "info", "--delete", "title"] }
         for (i, _) in audio.enumerated() {
@@ -191,7 +205,7 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
         switch plan.subDefault { case .none: lines.append("Nessun sottotitolo predefinito"); case .track(let k): lines.append("Sottotitoli predefiniti: traccia \(k + 1)"); case .keep: break }
         if let t = plan.setTitle { lines.append("Titolo del contenitore: «\(t)»") } else if plan.clearTitle { lines.append("Titolo del contenitore tolto") }
         for (k, v) in plan.lang.sorted(by: { $0.key < $1.key }) { lines.append("Lingua \(k.hasPrefix("a") ? "audio" : "sottotitoli") \(Int(k.dropFirst())! + 1): \(langLabel(v))") }
-        progress(1, "Fatto"); return FixResult(ok: true, message: inPlace ? "Etichette aggiornate nella copia corretta." : "Creata «\(output.lastPathComponent)» (copia istantanea con le sole etichette cambiate). L'originale non è stato toccato.", lines: lines, backup: nil, newURL: output)
+        progress(1, "Fatto"); return FixResult(ok: true, message: inPlace ? "Impostazioni aggiornate nel file, senza crearne una nuova versione." : "Creata «\(output.lastPathComponent)» (copia istantanea con le sole etichette cambiate). L'originale non è stato toccato.", lines: lines, backup: nil, newURL: output, labelsOnly: inPlace)
     }
 
     // 2) riscrittura con ffmpeg su un file temporaneo accanto all'originale
@@ -397,5 +411,6 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
         }
     } catch { return FixResult(ok: false, message: "Salvataggio non riuscito: \(error.localizedDescription). L'originale non è stato toccato.") }
     progress(1, "Fatto")
-    return FixResult(ok: true, message: (inPlace ? "Copia corretta aggiornata." : "Creata «\(output.lastPathComponent)». L'originale non è stato toccato.") + warn, lines: lines, backup: nil, newURL: output, doubts: doubts, doubtTrack: doubtTrack)
+    let labels = inPlace && !plan.changesContent   // solo impostazioni in un file non mkv: riscritto senza ricodifica e sostituito dopo i controlli
+    return FixResult(ok: true, message: (labels ? "Impostazioni aggiornate nel file, senza crearne una nuova versione." : inPlace ? "Copia corretta aggiornata." : "Creata «\(output.lastPathComponent)». L'originale non è stato toccato.") + warn, lines: lines, backup: nil, newURL: output, doubts: doubts, doubtTrack: doubtTrack, labelsOnly: labels)
 }

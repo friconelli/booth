@@ -7,6 +7,10 @@ App Mac (Swift/SwiftUI, come Dolly) che controlla un film prima della proiezione
 ## Interfaccia
 La schermata iniziale propone le tre cose che l'app sa fare, ognuna con il suo pulsante: **Controlla un film**, **Unisci due copie**, **Confronta due film** (si può anche trascinare un film direttamente nella finestra). Poi una scheda per film. In alto la locandina e i dati (da Wikidata/Wikipedia, solo con il consenso) e **una frase chiara**: «Pronto per la sala» oppure «3 cose da sistemare», con un solo pulsante grande **«Sistema tutto»** (raggruppa le correzioni sicure, esclude le eliminazioni di tracce e le ricodifiche lunghe). Sotto, **righe compatte**: titolo breve, traccia, secondo in cui compare il problema e un pulsante con l'azione («Ripara gli accenti», «Togli la pubblicità», «Converti in Dolby»…). Cliccando la riga si apre la spiegazione con i secondi e il **fotogramma** del film in quel punto. Ogni azione mostra prima il riepilogo e chiede conferma. Due schede: **Riepilogo** (solo ciò che serve) e **Dettagli** (note, dati tecnici, rianalisi, copia/salvataggio del rapporto, «Correggi a mano…»). La barra laterale compare solo con più di un film.
 
+## Impostazioni senza nuova versione
+
+Titolo, nome del file, lingue delle tracce, traccia audio e sottotitoli predefiniti, etichetta «forzati»: sono impostazioni, non correzioni del contenuto. Booth le cambia **direttamente nel film**, senza creare una nuova versione e senza confronto prima/dopo (negli mkv cambia solo l'intestazione, in un attimo; negli altri formati il file viene riscritto senza ricodifica e sostituito solo dopo i controlli). Prima di cambiare tiene un clone istantaneo del file e, se qualcosa non torna, rimette tutto com'era. Le correzioni che toccano immagine, audio o sottotitoli creano sempre la copia «… (corretto)» e lasciano l'originale intatto.
+
 ## Prepara per la sala
 Il pulsante principale del riepilogo fa tutto il percorso: prende le correzioni di tutte le segnalazioni indispensabili (anche le lunghe, come HDR → SDR o il doppiaggio da rimettere a tempo) e, tra le migliorie, solo quelle che non toccano suono e immagine (etichette, titolo, accenti, pubblicità nei sottotitoli, dialoghi alzati solo se la musica li copre davvero); niente Dolby né volume, che con l'impianto della sala non servono. Mostra prima cosa farà e cosa non può risolvere da solo (da fare a mano o con «Unisci»), crea la copia «(corretto)», la **rianalizza da capo** e la scarta (nel Cestino) se ha una segnalazione indispensabile nuova o se non ne ha risolta nessuna. Poi salva accanto al film la **scheda per la sala** («… — scheda per la sala.txt»): esito, consigli per la proiezione, cosa ha fatto Booth, cosa guardare prima della proiezione e il rapporto completo. Da riga di comando: `dist/booth --prepare FILE [--output PATH]`.
 
@@ -88,7 +92,7 @@ Caso reale (Luis e gli alieni): MKV 720p a 24 fps senza italiano + AVI 576p a 25
 ## Uso
     ./build.sh                       # dist/Booth.app (+ dist/booth per la riga di comando)
     dist/booth --analyze film.mkv    # rapporto testuale
-    python3 tests/test_booth.py      # 100 controlli su film sintetici con difetti noti
+    python3 tests/test_booth.py      # 101 controlli su film sintetici con difetti noti
 
 Gli strumenti vengono copiati dentro l'app da `tools/bundle_tools.py` (`BUNDLE_FFMPEG=0 ./build.sh` per saltare e usare quelli di /opt/homebrew/bin). Per distribuire l'app pubblicamente tieni conto della licenza di ffmpeg (la build di Homebrew include componenti GPL). Solo Apple Silicon (arm64), macOS 13+. Non modifica mai i file analizzati.
 
