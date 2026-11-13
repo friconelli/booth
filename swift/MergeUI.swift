@@ -140,15 +140,15 @@ struct MergeView: View {
         let s = m.srcs[i], sel = m.video == i
         return Button { m.setVideo(i) } label: {
             VStack(alignment: .leading, spacing: 5) {
-                HStack { Image(systemName: sel ? "largecircle.fill.circle" : "circle").foregroundStyle(sel ? Color.accentColor : .secondary); Text(i == 0 ? "A" : "B").font(.caption.weight(.bold)).padding(.horizontal, 6).padding(.vertical, 1).background(Capsule().fill(Color.secondary.opacity(0.15)))
+                HStack { Image(systemName: sel ? "largecircle.fill.circle" : "circle").foregroundStyle(sel ? Color.brand : .secondary); Text(i == 0 ? "A" : "B").font(.caption.weight(.bold)).padding(.horizontal, 6).padding(.vertical, 1).background(Capsule().fill(Color.secondary.opacity(0.15)))
                     Text(s.url.lastPathComponent).font(.callout.weight(.medium)).lineLimit(2).multilineTextAlignment(.leading); Spacer(minLength: 0)
                     if i == m.bestVideo { Text("Migliore").font(.caption.weight(.semibold)).foregroundStyle(.green).padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(Color.green.opacity(0.13))) } }
                 Text(s.video?.summary ?? "nessuna immagine").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Text("\(hms(s.probe.duration)) · \(fmtBytes(s.probe.size))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 ForEach(s.video?.notes ?? [], id: \.self) { Text("• " + $0).font(.caption).foregroundStyle(.orange) }
             }.padding(11).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            .background(RoundedRectangle(cornerRadius: 9).fill(sel ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.05)))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(sel ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: sel ? 2 : 1))
+            .background(RoundedRectangle(cornerRadius: 9).fill(sel ? Color.brand.opacity(0.08) : Color.secondary.opacity(0.05)))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(sel ? Color.brand : Color.secondary.opacity(0.2), lineWidth: sel ? 2 : 1))
         }.buttonStyle(.plain)
     }
     // MARK: audio e sottotitoli
@@ -168,7 +168,7 @@ struct MergeView: View {
                 HStack(spacing: 10) {
                     Toggle("", isOn: Binding(get: { m.audio.contains(t.id) }, set: { _ in m.toggleAudio(t.id) })).toggleStyle(.checkbox).labelsHidden()
                     trackLine(t); Spacer(minLength: 0)
-                    if m.audio.contains(t.id) { Button { m.defaultAudio = t.id; m.selectionChanged(); m.preview() } label: { Label("Predefinita", systemImage: m.defaultAudio == t.id ? "star.fill" : "star") }.buttonStyle(.borderless).foregroundStyle(m.defaultAudio == t.id ? Color.accentColor : .secondary) }
+                    if m.audio.contains(t.id) { Button { m.defaultAudio = t.id; m.selectionChanged(); m.preview() } label: { Label("Predefinita", systemImage: m.defaultAudio == t.id ? "star.fill" : "star") }.buttonStyle(.borderless).foregroundStyle(m.defaultAudio == t.id ? Color.brand : .secondary) }
                 }
             }
             Text("Già scelta la traccia italiana migliore. La stella indica quella che parte da sola (ed è quella che senti nell'anteprima).").font(.caption).foregroundStyle(.secondary)
@@ -220,7 +220,7 @@ struct MergeView: View {
                         Text(r.why).font(.callout).foregroundStyle(.secondary).lineLimit(1)
                         Spacer(minLength: 6)
                         Button(here ? "In anteprima" : "Guarda") { m.look(r) }.controlSize(.small).disabled(here && m.previewBusy)
-                    }.padding(.vertical, 2).padding(.horizontal, 6).background(RoundedRectangle(cornerRadius: 5).fill(here ? Color.accentColor.opacity(0.12) : .clear))
+                    }.padding(.vertical, 2).padding(.horizontal, 6).background(RoundedRectangle(cornerRadius: 5).fill(here ? Color.brand.opacity(0.12) : .clear))
                 } }.frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: min(CGFloat(rs.count) * 28 + 4, 170))
             }.frame(maxWidth: 640, alignment: .leading)
         }
@@ -264,14 +264,14 @@ struct MergeView: View {
                     VStack(alignment: .leading, spacing: 3) { Text(r.message).font(.callout.weight(.semibold)).textSelection(.enabled)
                         ForEach(Array(r.lines.filter { $0.hasPrefix("Sincronia") || $0.hasPrefix("Audio") || $0.hasPrefix("Correzione") }.enumerated()), id: \.offset) { Text($0.element).font(.caption).foregroundStyle(.secondary) }
                         if r.ok, let u = r.newURL { HStack { Button("Mostra nel Finder") { NSWorkspace.shared.activateFileViewerSelecting([u]) }.controlSize(.small)
-                            Button("Controlla con Booth") { m.player?.pause(); store.add([u]); dismiss() }.controlSize(.small).buttonStyle(.borderedProminent) } } }
+                            Button("Controlla con Booth") { m.player?.pause(); store.add([u]); dismiss() }.controlSize(.small).buttonStyle(.brand) } } }
                 }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(RoundedRectangle(cornerRadius: 8).fill((r.ok ? Color.green : Color.red).opacity(0.09)))
             }
             HStack {
                 if m.creating { ProgressView(value: m.progress).frame(width: 220); Text(m.stage).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                 else if let o = m.output { Text("Verrà creato «\(o.lastPathComponent)» accanto al film con l'immagine. I due file di partenza non vengono toccati.").font(.caption).foregroundStyle(.secondary).lineLimit(2) }
                 Spacer()
-                Button("Crea il film unito") { m.create { _ in } }.buttonStyle(.borderedProminent).controlSize(.large).disabled(!m.ready)
+                Button("Crea il film unito") { m.create { _ in } }.buttonStyle(.brand).controlSize(.large).disabled(!m.ready)
             }
         }
     }
@@ -292,7 +292,7 @@ struct PartsBar: View {
                 let w = g.size.width, x = { (t: Double) in CGFloat(t / max(1, duration)) * w }
                 ZStack(alignment: .leading) {
                     ForEach(Array(alignment.segments.enumerated()), id: \.offset) { _, s in
-                        Rectangle().fill(s.d == nil ? Color.secondary.opacity(0.35) : Color.accentColor.opacity(0.55)).frame(width: max(1, x(s.end) - x(s.start))).offset(x: x(s.start))
+                        Rectangle().fill(s.d == nil ? Color.secondary.opacity(0.35) : Color.brand.opacity(0.55)).frame(width: max(1, x(s.end) - x(s.start))).offset(x: x(s.start))
                     }
                     ForEach(Array(alignment.segments.enumerated().dropFirst()), id: \.offset) { _, s in Rectangle().fill(Color.red).frame(width: 2).offset(x: x(s.start) - 1) }
                     ForEach(alignment.risks, id: \.self) { r in Rectangle().fill(Color.orange).frame(width: 3).offset(x: x(r.t) - 1.5) }

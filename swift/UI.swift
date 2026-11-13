@@ -244,7 +244,9 @@ struct ContentView: View {
             }.sheet(item: $store.mergeRequest) { r in MergeView(urls: r.urls, store: store) } }
         }
         .frame(minWidth: 900, minHeight: 600)
+        .background { if ProcessInfo.processInfo.environment["BOOTH_OPEN_SETTINGS"] != nil, #available(macOS 14, *) { SettingsOpener() } }   // solo per i collaudi
         .overlay { if store.compareBusy { CompareBusyOverlay(store: store) } }
+        .overlay(alignment: .bottom) { UpdateBar(m: UpdateModel.shared, busy: store.jobs.contains { $0.report == nil || $0.fixProgress != nil }).animation(.easeOut(duration: 0.2), value: UpdateModel.shared.state) }
         .sheet(item: $store.better) { v in BetterView(v: v, sideBySide: { store.better = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.comparePair = ComparePair(before: v.urls[0], beforeReport: v.reports[0], after: v.urls[1], afterReport: v.reports[1]) } },
                                                          merge: { store.better = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.mergeRequest = MergeRequest(urls: v.urls) } },
                                                          fixDub: { store.better = nil; if let d = v.dub { store.fixDub(v.urls, d) } }) }
@@ -254,7 +256,7 @@ struct ContentView: View {
         .onDrop(of: [.fileURL], isTargeted: $hover) { ps in
             guard !store.compareBusy else { return false }
             for p in ps { _ = p.loadObject(ofClass: URL.self) { u, _ in if let u = u { DispatchQueue.main.async { store.add([u]) } } } }; return true }
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accentColor, lineWidth: hover ? 3 : 0).padding(6).allowsHitTesting(false))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.brand, lineWidth: hover ? 3 : 0).padding(6).allowsHitTesting(false))
         .toolbar {
             if let p = store.modelProgress { ToolbarItem { HStack { Text("Scarico il modello vocale…").font(.caption).foregroundStyle(.secondary); ProgressView(value: p).frame(width: 110) } } }
             if !store.jobs.isEmpty && !store.compareBusy {   // sulla schermata iniziale le tre scelte ci sono già
@@ -271,7 +273,7 @@ struct CompareBusyOverlay: View {
         ZStack {
             Rectangle().fill(.ultraThinMaterial).ignoresSafeArea().contentShape(Rectangle()).onTapGesture {}
             VStack(spacing: 14) {
-                Image(systemName: "rectangle.split.2x1").font(.system(size: 34)).foregroundStyle(Color.accentColor)
+                Image(systemName: "rectangle.split.2x1").font(.system(size: 34)).foregroundStyle(Color.brand)
                 Text("Confronto i due film").font(.title2.weight(.semibold))
                 ProgressView(value: store.compareProgress).frame(width: 360)
                 Text(store.compareStatus).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).lineLimit(3).frame(width: 420)
@@ -283,9 +285,12 @@ struct CompareBusyOverlay: View {
 /// Schermata iniziale: le tre cose che l'app sa fare, ognuna con una riga di spiegazione e il suo pulsante.
 struct DropHint: View {
     @ObservedObject var store: Store
+    @AppStorage(Projector.defaultsKey) private var projectorData: Data?   // si aggiorna quando cambia il proiettore
+    private var projectorLabel: String { _ = projectorData; return Projector.label + (Projector.hdr ? ", HDR" : "") }
     var body: some View {
         VStack(spacing: 28) {
             VStack(spacing: 6) {
+                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 84, height: 84).padding(.bottom, 4)
                 Text("Prepara un film per la sala").font(.largeTitle.weight(.semibold))
                 Text("Trascina qui un film (mp4, mkv, avi), anche più di uno o una cartella intera.").foregroundStyle(.secondary)
             }
@@ -295,6 +300,15 @@ struct DropHint: View {
                 Choice(icon: "rectangle.split.2x1", title: "Confronta due film", text: "Due copie dello stesso film: ti dice quale è meglio per la sala e perché (immagine, audio italiano, sottotitoli, problemi).", button: "Scegli i due film…") { store.compareFiles() }
             }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: 820)
             Text("Il file originale non viene mai modificato: ogni correzione o unione crea una copia nuova accanto.").font(.caption).foregroundStyle(.tertiary)
+            HStack(spacing: 6) {
+                Image(systemName: "videoprojector").foregroundStyle(.tertiary)
+                Text("Proiettore: \(projectorLabel)").foregroundStyle(.secondary)
+                OpenSettingsButton { Text("Cambia") }.buttonStyle(.plain).foregroundStyle(Color.brand).onHover { $0 ? NSCursor.pointingHand.push() : NSCursor.pop() }
+                Text("·").foregroundStyle(.tertiary).padding(.horizontal, 4)
+                Text("Booth \(Updater.current)").foregroundStyle(.tertiary)
+                Text("·").foregroundStyle(.tertiary)
+                Button("Controlla aggiornamenti") { UpdateModel.shared.check() }.buttonStyle(.plain).foregroundStyle(Color.brand).onHover { $0 ? NSCursor.pointingHand.push() : NSCursor.pop() }
+            }.font(.caption)
         }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
@@ -302,14 +316,14 @@ struct Choice: View {
     let icon: String, title: String, text: String, button: String; var primary = false; let action: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: icon).font(.system(size: 26, weight: .light)).foregroundStyle(primary ? Color.accentColor : .secondary).frame(height: 34, alignment: .leading)
+            Image(systemName: icon).font(.system(size: 26, weight: .light)).foregroundStyle(primary ? Color.brand : .secondary).frame(height: 34, alignment: .leading)
             Text(title).font(.title3.weight(.semibold))
             Text(text).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
-            if primary { Button(button, action: action).buttonStyle(.borderedProminent).controlSize(.large) } else { Button(button, action: action).controlSize(.large) }
+            if primary { Button(button, action: action).buttonStyle(.brand).controlSize(.large) } else { Button(button, action: action).controlSize(.large) }
         }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.045)))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(primary ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(primary ? Color.brand.opacity(0.5) : Color.primary.opacity(0.08)))
     }
 }
 struct JobRow: View {
@@ -333,7 +347,7 @@ struct FixBanner: View {
                 Text(result.message).font(.callout.weight(.semibold)).textSelection(.enabled)
                 ForEach(Array(result.lines.enumerated()), id: \.offset) { Text($0.element).font(.callout.monospacedDigit()).foregroundStyle(.secondary).textSelection(.enabled) }
                 if result.ok && (compare != nil) { HStack {
-                    Button { compare?() } label: { Label("Confronta prima e dopo", systemImage: "rectangle.split.2x1") }.controlSize(.small).buttonStyle(.borderedProminent)
+                    Button { compare?() } label: { Label("Confronta prima e dopo", systemImage: "rectangle.split.2x1") }.controlSize(.small).buttonStyle(.brand)
                     Button("Mostra nel Finder") { reveal?() }.controlSize(.small)
                     Button("Elimina la copia corretta") { discard?() }.controlSize(.small) }.padding(.top, 3) }
             }

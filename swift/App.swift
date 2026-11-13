@@ -8,7 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct BoothApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     var body: some Scene {
-        WindowGroup("Booth") { ContentView(store: AppDelegate.store) }
-            .commands { CommandGroup(replacing: .newItem) { Button("Apri film…") { AppDelegate.store.open() }.keyboardShortcut("o"); Button("Confronta due film…") { AppDelegate.store.compareFiles() }.keyboardShortcut("c", modifiers: [.command, .shift]); Button("Unisci due copie…") { AppDelegate.store.mergeFiles() }.keyboardShortcut("u", modifiers: [.command, .shift]); Divider(); Button("Controlli sul parlato…") { AppDelegate.store.offerSpeechModel() }; Button("Dati del film online…") { AppDelegate.store.askOnline(force: true) } } }
+        WindowGroup("Booth") { ContentView(store: AppDelegate.store).tint(Color.brand) }
+            .commands { CommandGroup(after: .appInfo) { Button("Controlla aggiornamenti…") { UpdateModel.shared.check() } }; CommandGroup(replacing: .newItem) { Button("Apri film…") { AppDelegate.store.open() }.keyboardShortcut("o"); Button("Confronta due film…") { AppDelegate.store.compareFiles() }.keyboardShortcut("c", modifiers: [.command, .shift]); Button("Unisci due copie…") { AppDelegate.store.mergeFiles() }.keyboardShortcut("u", modifiers: [.command, .shift]); Divider(); Button("Controlli sul parlato…") { AppDelegate.store.offerSpeechModel() }; Button("Dati del film online…") { AppDelegate.store.askOnline(force: true) } } }
+        Settings { ProjectorSettings().tint(Color.brand) }
     }
 }

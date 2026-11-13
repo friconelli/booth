@@ -2,7 +2,7 @@
 # Compila Booth → dist/Booth.app. Uso: ./build.sh
 # Usa ffmpeg/ffprobe di Homebrew (/opt/homebrew/bin) oppure quelli messi in Contents/Resources.
 set -e; cd "$(dirname "$0")"
-NAME="Booth"; EXE=booth; BUNDLE_ID=app.booth.Booth; VERSION=${VERSION:-0.2.0}
+NAME="Booth"; EXE=booth; BUNDLE_ID=app.booth.Booth; VERSION=${VERSION:-0.3.0}
 SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX15.2.sdk
 A="dist/$NAME.app"; rm -rf "$A"; mkdir -p "$A/Contents/MacOS" "$A/Contents/Resources"
 swiftc -O -sdk $SDK -target arm64-apple-macos13.0 swift/*.swift -o "$A/Contents/MacOS/$EXE"

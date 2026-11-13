@@ -66,14 +66,14 @@ struct DoubtView: View {
                                 }
                                 HStack(spacing: 6) {
                                     ForEach(d.options.sorted(), id: \.self) { s in
-                                        Button(label(s)) { m.set(d, s) }.buttonStyle(.bordered).tint(abs(m.shift(d) - s) < 0.0005 ? .accentColor : .secondary)
+                                        Button(label(s)) { m.set(d, s) }.buttonStyle(.bordered).tint(abs(m.shift(d) - s) < 0.0005 ? Color.brand : .secondary)
                                     }
                                     Divider().frame(height: 16)
                                     Button("−1 fot.") { m.set(d, m.shift(d) - 0.040) }.help("Audio dopo di un fotogramma")
                                     Button("+1 fot.") { m.set(d, m.shift(d) + 0.040) }.help("Audio prima di un fotogramma")
                                     if !d.options.contains(where: { abs($0 - m.shift(d)) < 0.0005 }) { Text(label(m.shift(d))).font(.caption.monospacedDigit()).foregroundStyle(.orange) }
                                 }.disabled(m.applying)
-                            }.padding(8).background(RoundedRectangle(cornerRadius: 6).fill(m.current == d.start ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.05)))
+                            }.padding(8).background(RoundedRectangle(cornerRadius: 6).fill(m.current == d.start ? Color.brand.opacity(0.08) : Color.secondary.opacity(0.05)))
                         }
                     }
                 }.frame(width: 430)
@@ -94,7 +94,7 @@ struct DoubtView: View {
                 Text(m.changed.isEmpty ? "Nessun tratto cambiato" : "\(m.changed.count) tratt\(m.changed.count == 1 ? "o" : "i") da spostare").foregroundStyle(.secondary)
                 Spacer()
                 Button(m.result?.ok == true ? "Chiudi" : "Lascia così") { m.player?.pause(); done(m.result); dismiss() }.disabled(m.applying)
-                Button("Applica") { m.apply { r in if r.ok { m.choice = [:] } } }.buttonStyle(.borderedProminent).disabled(m.changed.isEmpty || m.applying)
+                Button("Applica") { m.apply { r in if r.ok { m.choice = [:] } } }.buttonStyle(.brand).disabled(m.changed.isEmpty || m.applying)
             }
         }.padding(22).frame(width: 960)
     }

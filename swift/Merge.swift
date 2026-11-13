@@ -40,7 +40,7 @@ struct VideoInfo {
         var n: [String] = []
         if dv5 { n.append("Dolby Vision profilo 5: senza un lettore Dolby Vision i colori escono sbagliati") }
         if interlaced { n.append("Video interlacciato") }
-        if !hdr.isEmpty && !dv5 { n.append("HDR: su un proiettore SDR va convertito (Booth lo fa dopo l'unione)") }
+        if !hdr.isEmpty && !dv5 && !Projector.hdr { n.append("HDR: su un proiettore SDR va convertito (Booth lo fa dopo l'unione)") }
         return n
     }
 }

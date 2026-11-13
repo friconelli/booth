@@ -151,7 +151,7 @@ struct JobDetail: View {
                 }
                 Spacer()
                 Button { store.prepare(job) } label: { Label(nE == 0 ? "Scheda per la sala" : "Prepara per la sala", systemImage: nE == 0 ? "doc.text" : "wand.and.stars").font(.headline).padding(.horizontal, 6).padding(.vertical, 3) }
-                    .buttonStyle(.borderedProminent).controlSize(.large).disabled(job.fixProgress != nil).help("Corregge quello che serve per la proiezione, ricontrolla il film corretto e salva accanto la scheda per la sala")
+                    .buttonStyle(.brand).controlSize(.large).disabled(job.fixProgress != nil).help("Corregge quello che serve per la proiezione, ricontrolla il film corretto e salva accanto la scheda per la sala")
             }
             if nE > 0 { VStack(spacing: 8) { ForEach(eItems) { fixRow($0) }; ForEach(eTodo) { manualRow($0) } } }
             if !r.tips.isEmpty { tipsCard(r.tips) }
@@ -187,7 +187,7 @@ struct JobDetail: View {
                     VStack(alignment: .leading, spacing: 2) { Text(t.title).font(.callout.weight(.semibold)); Text(t.text).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
                 }
             }
-        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(RoundedRectangle(cornerRadius: 10).fill(Color.teal.opacity(0.07)))
+        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(RoundedRectangle(cornerRadius: 10).fill(Color.brand.opacity(0.07)))
     }
     func fixRow(_ it: FixItem, plus: Bool = false) -> some View {
         let (title, ctx) = splitTitle(it.title); let isOpen = open.contains(it.id)

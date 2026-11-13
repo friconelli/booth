@@ -34,6 +34,17 @@ if let i = CommandLine.arguments.firstIndex(of: "--dub-check"), i + 4 < CommandL
     print("CORREZIONE"); show(segs); print("RESIDUO"); show(res)
     exit(0)
 }
+if CommandLine.arguments.contains("--update-check") {   // collaudo: --update-check [--download] (con BOOTH_UPDATE_URL / BOOTH_VERSION)
+    do {
+        let i = try Updater.fetch()
+        print("installata \(Updater.current) · ultima \(i.version) · \(Updater.isNewer(i.version, than: Updater.current) ? "da aggiornare" : "aggiornata") · zip \(i.url.absoluteString) \(i.bytes) byte · sha256 \(i.sha256.isEmpty ? "assente" : String(i.sha256.prefix(12)) + "…")")
+        if CommandLine.arguments.contains("--download") {
+            let p = try Updater.download(i) { g, t, a, w in FileHandle.standardError.write(Data(String(format: "\r%.1f / %.1f MB  tentativo %d%@          ", Double(g) / 1e6, Double(t) / 1e6, a, w > 0 ? " (riprovo tra \(w) s)" : "").utf8)) }
+            FileHandle.standardError.write(Data("\n".utf8)); print("OK: \(p)")
+        }
+        exit(0)
+    } catch { print("ERRORE: \(error)"); exit(1) }
+}
 if let f = arg("--prepare").first {   // «Prepara per la sala»: --prepare FILE [--output PATH]
     let r = prepareForScreening(URL(fileURLWithPath: f), output: arg("--output").first.map { URL(fileURLWithPath: $0) }) { p, s in FileHandle.standardError.write(Data(String(format: "\r%3.0f%% %@                    ", p * 100, s).utf8)) }
     FileHandle.standardError.write(Data("\n".utf8)); print((r.ok ? "OK: " : "ERRORE: ") + r.message); r.lines.forEach { print("  " + $0) }; exit(r.ok ? 0 : 1)

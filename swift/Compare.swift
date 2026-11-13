@@ -147,8 +147,8 @@ struct CompareView: View {
             HStack(spacing: 10) {
                 if !m.afterReport.audioTracks.isEmpty {
                     Picker("Traccia audio", selection: Binding(get: { m.audioTrackAfter }, set: { m.audioTrackAfter = $0; m.load() })) { ForEach(m.afterReport.audioTracks) { Text("\($0.ord + 1) · \(langLabel($0.lang)) · \($0.codec.uppercased())").tag($0.ord) } }.frame(width: 300)
-                    Button { m.play("prima") } label: { Label("Ascolta prima", systemImage: "play.fill") }.tint(m.playing == "prima" ? .accentColor : nil)
-                    Button { m.play("dopo") } label: { Label("Ascolta dopo", systemImage: "play.fill") }.tint(m.playing == "dopo" ? .accentColor : nil)
+                    Button { m.play("prima") } label: { Label("Ascolta prima", systemImage: "play.fill") }.tint(m.playing == "prima" ? Color.brand : nil)
+                    Button { m.play("dopo") } label: { Label("Ascolta dopo", systemImage: "play.fill") }.tint(m.playing == "dopo" ? Color.brand : nil)
                     Button { m.stop() } label: { Label("Ferma", systemImage: "stop.fill") }
                 } else { Text("Nessuna traccia audio").foregroundStyle(.secondary) }
             }

@@ -42,7 +42,7 @@ func whichIsBetter(_ s: [MergeSource], _ r: [Report], dub: DubCheck? = nil) -> B
         else { add(sa, sb, min(600, d * 0.4)) { w in
             let x = w == 0 ? a : b, y = w == 0 ? b : a
             var t = "Immagine migliore sul proiettore: \(x.w)×\(x.h) \(x.codec.uppercased())" + (x.bitrate > 0 ? " a \(fmtRate(x.bitrate))" : "") + " contro \(y.w)×\(y.h) \(y.codec.uppercased())" + (y.bitrate > 0 ? " a \(fmtRate(y.bitrate))" : "")
-            if x.w > Projector.w { t += " (sul proiettore, \(Projector.w)×\(Projector.h), il \(x.w >= 3000 ? "4K" : "file") si vede come un 1080p molto pulito, non di più)" }
+            if x.w > Projector.w { t += " (sul proiettore, \(Projector.w)×\(Projector.h), il \(x.w >= 3000 ? "4K" : "file") si vede pulitissimo ma non più definito di così)" }
             if y.dv5 { t += "; l'altra è Dolby Vision 5 (colori sbagliati senza un lettore apposito)" } else if y.interlaced { t += "; l'altra è interlacciata" }
             return t } }
     }
@@ -98,14 +98,14 @@ struct BetterView: View {
                 }.font(.callout)
             }
             if v.mergeHint { HStack(spacing: 10) {
-                Image(systemName: "arrow.triangle.merge").foregroundStyle(Color.accentColor)
+                Image(systemName: "arrow.triangle.merge").foregroundStyle(Color.brand)
                 Text("Ancora meglio: unirle, con l'immagine di una e l'audio italiano dell'altra.").font(.callout)
-                Spacer(); if let m = merge { Button("Unisci le due copie…") { m() }.buttonStyle(.borderedProminent) }
-            }.padding(10).background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.08))) }
+                Spacer(); if let m = merge { Button("Unisci le due copie…") { m() }.buttonStyle(.brand) }
+            }.padding(10).background(RoundedRectangle(cornerRadius: 8).fill(Color.brand.opacity(0.08))) }
             if let d = v.dub, !d.ok { HStack(spacing: 10) {
                 Image(systemName: "waveform.badge.exclamationmark").foregroundStyle(.orange)
                 Text(String(format: "Il doppiaggio di «%@» non è a tempo con l'immagine: fuori tolleranza per %@ di film, fino a %.0f ms. Booth può rimetterlo a tempo usando come riferimento %@ dell'altra copia: stessa immagine, stesso peso.", v.urls[d.ita].lastPathComponent, hms(d.badDur), abs(d.worst) * 1000, d.refText)).font(.callout)
-                Spacer(); if let f = fixDub { Button("Rimetti a tempo…") { f() }.buttonStyle(.borderedProminent) }
+                Spacer(); if let f = fixDub { Button("Rimetti a tempo…") { f() }.buttonStyle(.brand) }
             }.padding(10).background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.08))) }
             HStack(alignment: .top, spacing: 14) { ForEach(0..<2, id: \.self) { i in card(i) } }
             HStack {
