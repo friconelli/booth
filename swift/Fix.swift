@@ -20,8 +20,10 @@ struct FixPlan {
     var deinterlace = false                            // deinterlacciamento dell'immagine (ricodifica del video)
     var centerDB = 4.0                                 // quanto alzare il canale centrale
     var audioTouched: Set<Int> { normalize.union(boostCenter).union(levelGain).union(toDolby).union(retimeDub.keys).union(shiftAudio.keys) }
+    var addSubs: [AddedSub] = []
+    var outputExt: String?                             // formato della copia, se diverso dall'originale (mp4 → mkv per i sottotitoli posizionati)                      // sottotitoli esterni (es. scaricati) da aggiungere come nuova traccia
     var eraseText: [EraseRegion] = []                  // scritte da cancellare dall'immagine (ricodifica solo il tratto in cui compaiono)
-    var changesContent: Bool { !cleanSubs.isEmpty || !dropSubs.isEmpty || !dropAudio.isEmpty || !normalize.isEmpty || !boostCenter.isEmpty || !levelGain.isEmpty || !toDolby.isEmpty || !retimeDub.isEmpty || !shiftAudio.isEmpty || !syncSubs.isEmpty || !repairSubs.isEmpty || deinterlace || tonemap || !eraseText.isEmpty }
+    var changesContent: Bool { !cleanSubs.isEmpty || !dropSubs.isEmpty || !dropAudio.isEmpty || !normalize.isEmpty || !boostCenter.isEmpty || !levelGain.isEmpty || !toDolby.isEmpty || !retimeDub.isEmpty || !shiftAudio.isEmpty || !syncSubs.isEmpty || !repairSubs.isEmpty || deinterlace || tonemap || !eraseText.isEmpty || !addSubs.isEmpty }
     var isEmpty: Bool { !changesContent && !clearTitle && setTitle == nil && audioDefault == nil && subDefault == .keep && lang.isEmpty && forcedFlags.isEmpty }
     mutating func merge(_ h: FixHint) {
         switch h {
@@ -65,6 +67,8 @@ extension FixPlan {
         for i in cleanSubs.sorted() { l.append("Togliere pubblicità e crediti dai \(s(i))") }
         for (i, v) in syncSubs.sorted(by: { $0.key < $1.key }) { l.append(v.a == 1 ? String(format: "Spostare di %+.1f s i %@", v.b, s(i)) : "Risincronizzare (frame rate) i \(s(i))") }
         for i in dropSubs.sorted() { l.append("Eliminare i \(s(i))") }
+        for x in addSubs { l.append("Aggiungere i sottotitoli in \(langLabel(x.lang)) come nuova traccia" + (x.isDefault ? ", attivi all'avvio" : ", non attivi all'avvio") + (x.position != nil ? ", sopra i sottotitoli impressi nell'immagine" : "") + (x.cover != nil ? ", con una fascia nera che copre i sottotitoli impressi mentre ci sono battute" : "")) }
+        if let e = outputExt { l.append("Salvare la copia come .\(e) (immagine e audio identici, nessuna ricodifica)") }
         for i in dropAudio.sorted() { l.append("Eliminare la traccia \(a(i))") }
         for (i, r) in retimeDub.sorted(by: { $0.key < $1.key }) { l.append("Rimettere a tempo il doppiaggio \(a(i)) sulla traccia \(a(r)), tratto per tratto (ricodifica in Dolby Digital)") }
         for (i, v) in shiftAudio.sorted(by: { $0.key < $1.key }) { l.append("Spostare la traccia \(a(i)) in \(v.count) tratt\(v.count == 1 ? "o" : "i"): " + v.map { String(format: "%@–%@ %.0f ms %@", hms($0.start), hms($0.end), abs($0.shift) * 1000, $0.shift > 0 ? "prima" : "dopo") }.joined(separator: ", ") + " (ricodifica in Dolby Digital)") }
@@ -114,13 +118,15 @@ func setVerdictTag(_ url: URL, ok: Bool) {
     tags.append(ok ? "Verde\n2" : "Rosso\n6")
     if let d = try? PropertyListSerialization.data(fromPropertyList: tags, format: .binary, options: 0) { _ = d.withUnsafeBytes { setxattr(path, key, $0.baseAddress, d.count, 0, 0) } }
 }
+/// Il titolo scritto nei metadati del contenitore (nil se non c'è).
+func containerTitle(_ url: URL) -> String? { Probe(url.path).flatMap { tags(["tags": $0.fmt["tags"] as Any])["title"] } }
 /// Il nome del file senza estensione e senza il «(corretto)» aggiunto dall'app: è il titolo che il contenitore dovrebbe avere.
 func titleBase(_ url: URL) -> String { url.deletingPathExtension().lastPathComponent.replacingOccurrences(of: #" \(corretto\)( \d+)?$"#, with: "", options: .regularExpression) }
 /// Dove salvare la versione corretta: accanto all'originale, con il nome nuovo (se c'è) o «… (corretto)»; mai su un file che esiste già.
-func correctedURL(for url: URL, rename: String? = nil) -> URL {
-    let dir = url.deletingLastPathComponent(), ext = url.pathExtension, orig = url.deletingPathExtension().lastPathComponent
+func correctedURL(for url: URL, rename: String? = nil, ext newExt: String? = nil) -> URL {
+    let dir = url.deletingLastPathComponent(), ext = newExt ?? url.pathExtension, orig = url.deletingPathExtension().lastPathComponent
     var base = (rename ?? "").replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespaces)
-    if base.isEmpty || base == orig { base = orig + " (corretto)" }
+    if base.isEmpty || base == orig { base = orig.range(of: #" \(corretto\)( \d+)?$"#, options: .regularExpression) != nil && newExt != nil ? orig : orig + " (corretto)" }
     var u = dir.appendingPathComponent(base + "." + ext), n = 1
     while FileManager.default.fileExists(atPath: u.path) { n += 1; u = dir.appendingPathComponent("\(base) \(n)." + ext) }
     return u
@@ -155,7 +161,10 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
         guard let v = pr.video, ["smpte2084", "arib-std-b67"].contains((v["color_transfer"] as? String) ?? "") else { return FixResult(ok: false, message: "Il video non è HDR (PQ o HLG): niente da convertire.") }
         if ((v["side_data_list"] as? [[String: Any]]) ?? []).contains(where: { ($0["side_data_type"] as? String ?? "").contains("DOVI") && (dbl($0["dv_profile"]) ?? 0) == 5 }) { return FixResult(ok: false, message: "Dolby Vision profilo 5: non ha un livello base HDR10, la conversione darebbe colori sbagliati. Serve un'altra sorgente.") }
     }
-    if ext == "avi" && (!plan.cleanSubs.isEmpty || plan.subDefault != .keep) { return FixResult(ok: false, message: "Il formato AVI non può contenere sottotitoli.") }
+    let oext = output.pathExtension.lowercased()   // formato del file di uscita: di solito lo stesso; un mp4 diventa mkv quando i sottotitoli aggiunti devono stare in una posizione precisa
+    if oext != ext && !(oext == "mkv" && ["mp4", "m4v", "mov"].contains(ext)) { return FixResult(ok: false, message: "Conversione da .\(ext) a .\(oext) non prevista.") }
+    if oext != "mkv" && plan.addSubs.contains(where: { $0.position != nil || $0.cover != nil }) { return FixResult(ok: false, message: "I sottotitoli in una posizione precisa (sopra quelli impressi nell'immagine) si possono mettere solo in un .mkv.") }
+    if ext == "avi" && (!plan.cleanSubs.isEmpty || plan.subDefault != .keep || !plan.addSubs.isEmpty) { return FixResult(ok: false, message: "Il formato AVI non può contenere sottotitoli.") }
 
     // 0) cancellazione di una scritta: si ricodificano solo i primi secondi (mkvmerge + ffmpeg) e poi, se serve, si applica il resto della correzione alla copia
     if !plan.eraseText.isEmpty {
@@ -213,7 +222,7 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
     if let free = (try? dir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage, Double(free) < pr.size * 1.05 + 1e8 {
         return FixResult(ok: false, message: "Spazio insufficiente: servono almeno \(fmtBytes(pr.size * 1.05)) liberi.")
     }
-    let tmp = dir.appendingPathComponent(".\(base).booth-tmp.\(ext)"); try? FileManager.default.removeItem(at: tmp)
+    let tmp = dir.appendingPathComponent(".\(base).booth-tmp.\(oext)"); try? FileManager.default.removeItem(at: tmp)
     let work = FileManager.default.temporaryDirectory.appendingPathComponent("booth-fix-" + UUID().uuidString); try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: work); try? FileManager.default.removeItem(at: tmp) }
 
@@ -277,11 +286,21 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
         if (audio[k]["channels"] as? Int ?? 0) == 6, let d = dialogueStats(path, k) { beforeDial[k] = d }
     }
     for k in plan.levelGain where gains[k] == nil { return FixResult(ok: false, message: "Non riesco a misurare il volume della traccia audio \(k + 1).") }
+    // sottotitoli esterni: ognuno entra come file in più (SRT in UTF-8)
+    var added: [(AddedSub, Int)] = []
+    for x in plan.addSubs {
+        guard let txt = readSubText(x.file), !parseSRT(txt).isEmpty else { return FixResult(ok: false, message: "Il file «\(x.file.lastPathComponent)» non è un sottotitolo SRT leggibile. Il film non è stato toccato.") }
+        let ass = oext == "mkv" && (x.position != nil || x.cover != nil), v = pr.video
+        let f = work.appendingPathComponent("add\(added.count).\(ass ? "ass" : "srt")")
+        try? (ass ? srtToASS(txt, width: Int(dbl(v?["width"]) ?? 1920), height: Int(dbl(v?["height"]) ?? 1080), bottom: x.position ?? 0.045, cover: x.cover) : txt).write(to: f, atomically: true, encoding: .utf8)
+        inputs += ["-i", f.path]; added.append((x, inputs.count / 2))
+    }
     var a = ["-nostdin", "-y", "-v", "error", "-progress", "pipe:2", "-nostats"]
     a += ["-i", path] + inputs
     a += ["-map_chapters", "0", "-map_metadata", "0", "-c", "copy"]
     if let t = plan.setTitle { a += ["-metadata", "title=\(t)"]; lines.append("Titolo del contenitore: «\(t)»") } else if plan.clearTitle { a += ["-metadata", "title="]; lines.append("Titolo del contenitore tolto") }   // base: tutto copiato; le opzioni per-traccia che seguono hanno la precedenza
-    if ext == "mp4" || ext == "m4v" || ext == "mov" { a += ["-c:s", "mov_text", "-movflags", "+faststart"] }
+    if oext == "mp4" || oext == "m4v" || oext == "mov" { a += ["-c:s", "mov_text", "-movflags", "+faststart"] }
+    else if oext == "mkv" && ext != "mkv" && !subs.isEmpty { a += ["-c:s", "srt"] }   // mp4 → mkv: i sottotitoli mov_text diventano SRT
     var vOut = 0, vDone = false
     for s in pr.streams where s["codec_type"] as? String == "video" {
         a += ["-map", "0:\(s["index"] as? Int ?? 0)"]
@@ -325,7 +344,7 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
         }
         j += 1
     }
-    var m = 0
+    var m = 0, subOn: [Bool] = []   // subOn: quali tracce di sottotitoli devono risultare attive all'avvio (negli mp4 si ricontrolla dopo)
     for (i, s) in subs.enumerated() where !plan.dropSubs.contains(i) {
         if let x = extra[i] { a += ["-map", "\(x):0"]; let tg = tags(s); if !lang(s).isEmpty { a += ["-metadata:s:s:\(m)", "language=\(lang(s))"] }; if let t = tg["title"] { a += ["-metadata:s:s:\(m)", "title=\(t)"] } }
         else { a += ["-map", "0:s:\(i)"] }
@@ -334,9 +353,14 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
         switch plan.subDefault { case .none: break; case .track(let k): if i == k { flags.append("default") }; case .keep: if disp(s, "default") == 1 { flags.append("default") } }
         if forced { flags.append("forced") }
         if plan.subDefault != .keep || extra[i] != nil || plan.forcedFlags[i] != nil { a += ["-disposition:s:\(m)", flags.isEmpty ? "0" : flags.joined(separator: "+")] }
-        m += 1
+        subOn.append(flags.contains("default")); m += 1
     }
-    if ext == "mkv" { a += ["-map", "0:t?"] }
+    for (x, idx) in added {
+        a += ["-map", "\(idx):0", "-metadata:s:s:\(m)", "language=\(x.lang)", "-disposition:s:\(m)", x.isDefault ? "default" : "0", "-c:s:\(m)", oext == "mkv" ? "copy" : "mov_text"] + (x.title.isEmpty ? [] : ["-metadata:s:s:\(m)", "title=\(x.title)"])
+        lines.append("Sottotitoli \(m + 1): aggiunti da «\(x.file.lastPathComponent)» (\(langLabel(x.lang)))" + (x.isDefault ? ", attivi all'avvio" : "") + (x.position.map { String(format: ", sopra i sottotitoli impressi nell'immagine (a %.0f%% dell'altezza)", $0 * 100) } ?? "") + (x.cover.map { String(format: ", con una fascia nera che copre i sottotitoli impressi (%.0f%% dell'altezza, solo mentre ci sono battute)", $0 * 100) } ?? ""))
+        subOn.append(x.isDefault); m += 1
+    }
+    if ext == "mkv" && oext == "mkv" { a += ["-map", "0:t?"] }
     if ext == "avi" { a += ["-sn"] }
     let final = a + [tmp.path]
     let total = max(1, e0 - s0)
@@ -347,16 +371,19 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
         else if !l.contains("=") && !l.isEmpty { errs.append(l) }
     }
     guard o.status == 0, FileManager.default.fileExists(atPath: tmp.path) else { return FixResult(ok: false, message: "ffmpeg non è riuscito: \(errs.suffix(2).joined(separator: " "))") }
+    // negli mp4 ffmpeg rende attiva la prima traccia di sottotitoli quando nessuna è predefinita: si spegne nell'intestazione, come deve essere
+    if ["mp4", "m4v", "mov"].contains(oext), !subOn.isEmpty, !subOn.contains(true) { mp4SetSubtitlesEnabled(tmp, subOn) }
 
     // verifica del risultato prima di sostituire qualunque cosa
     progress(0.82, "Verifica del nuovo file…")
     guard let np = Probe(tmp.path) else { return FixResult(ok: false, message: "Il nuovo file non è leggibile: l'originale non è stato toccato.") }
-    let expA = audio.count - plan.dropAudio.count, expS = ext == "avi" ? 0 : subs.count - plan.dropSubs.count
+    let expA = audio.count - plan.dropAudio.count, expS = oext == "avi" ? 0 : subs.count - plan.dropSubs.count + plan.addSubs.count
     if np.audio.count != expA || np.subs.count != expS { return FixResult(ok: false, message: "Il nuovo file ha un numero di tracce diverso dal previsto (audio \(np.audio.count)/\(expA), sottotitoli \(np.subs.count)/\(expS)): l'originale non è stato toccato.") }
     if abs(np.duration - (e0 - s0)) > 3 { return FixResult(ok: false, message: String(format: "Durata del nuovo file %@ diversa dal previsto %@: l'originale non è stato toccato.", hms(np.duration), hms(e0 - s0))) }
     // l'audio non deve avere buchi in più rispetto all'originale (un buco può nascere in silenzio dopo una ricodifica o un taglio)
     func packetIssues(_ p: Probe, _ path: String) -> Int { let c = Collector(); scanPackets(p, path, c); return c.findings.filter { $0.sev >= .warn }.count }
-    let before = packetIssues(pr, path), after = packetIssues(np, tmp.path)
+    // solo impostazioni: i flussi sono copiati tali e quali, rileggere tutti i pacchetti di due film non serve (bastano tracce e durata qui sopra)
+    let before = plan.changesContent ? packetIssues(pr, path) : 0, after = plan.changesContent ? packetIssues(np, tmp.path) : 0
     if after > before { return FixResult(ok: false, message: "Il controllo dei flussi ha trovato \(after - before) problemi di audio/video nel nuovo file: l'originale non è stato toccato.") }
     var warn = ""
     if plan.tonemap {
@@ -413,4 +440,69 @@ func applyFix(_ url: URL, _ plan: FixPlan, output: URL, progress: @escaping (Dou
     progress(1, "Fatto")
     let labels = inPlace && !plan.changesContent   // solo impostazioni in un file non mkv: riscritto senza ricodifica e sostituito dopo i controlli
     return FixResult(ok: true, message: (labels ? "Impostazioni aggiornate nel file, senza crearne una nuova versione." : inPlace ? "Copia corretta aggiornata." : "Creata «\(output.lastPathComponent)». L'originale non è stato toccato.") + warn, lines: lines, backup: nil, newURL: output, doubts: doubts, doubtTrack: doubtTrack, labelsOnly: labels)
+}
+
+/// Un sottotitolo esterno da aggiungere al film: file, lingua (codice a 3 lettere) e nome della traccia.
+struct AddedSub { var file: URL; var lang: String; var title: String = ""; var isDefault = false; var position: Double? = nil; var cover: Double? = nil }   // cover: altezza (frazione) della fascia nera che copre i sottotitoli impressi, solo mentre ci sono battute; solo mkv   // position: distanza dal basso (frazione dell'altezza) per stare sopra i sottotitoli impressi; solo mkv
+
+/// Converte un SRT in ASS con i sottotitoli alzati a `bottom` (frazione dell'altezza dal basso): servono a non coprire quelli impressi nell'immagine.
+func srtToASS(_ srt: String, width: Int, height: Int, bottom: Double, cover: Double? = nil) -> String {
+    func t(_ x: Double) -> String { let cs = Int((max(0, x) * 100).rounded()); return String(format: "%d:%02d:%02d.%02d", cs / 360000, cs / 6000 % 60, cs / 100 % 60, cs % 100) }
+    func body(_ s: String) -> String {
+        var x = s.replacingOccurrences(of: "<i>", with: "{\\i1}").replacingOccurrences(of: "</i>", with: "{\\i0}").replacingOccurrences(of: "<b>", with: "{\\b1}").replacingOccurrences(of: "</b>", with: "{\\b0}")
+        x = x.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression).replacingOccurrences(of: #"\{\\an?\d\}"#, with: "", options: .regularExpression)
+        return x.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: "\\N")
+    }
+    let fs = Int(Double(height) * 0.052), mv = Int(Double(height) * bottom)
+    var out = "[Script Info]\nScriptType: v4.00+\nPlayResX: \(width)\nPlayResY: \(height)\nWrapStyle: 0\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\n"
+    out += "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+    out += "Style: Default,Helvetica Neue,\(fs),&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,\(max(2, fs / 18)),1,2,\(width / 12),\(width / 12),\(mv),1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    let cues = parseSRT(srt).filter { !$0.t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    if let cv = cover {   // fascia nera a tutta larghezza (disegno vettoriale ASS) sotto le battute, unita quando le battute sono vicine
+        var spans: [(Double, Double)] = []
+        for c in cues.sorted(by: { $0.s < $1.s }) { let a = max(0, c.s - 0.3), b = c.e + 0.3; if let l = spans.last, a - l.1 < 3 { spans[spans.count - 1].1 = max(l.1, b) } else { spans.append((a, b)) } }
+        let bh = Int(Double(height) * cv), y = height - bh
+        for sp in spans { out += "Dialogue: 0,\(t(sp.0)),\(t(sp.1)),Default,,0,0,0,,{\\an7\\pos(0,\(y))\\bord0\\shad0\\1c&H000000&\\1a&H00&\\p1}m 0 0 l \(width) 0 \(width) \(bh) 0 \(bh){\\p0}\n" }
+    }
+    for c in cues { out += "Dialogue: 1,\(t(c.s)),\(t(c.e)),Default,,0,0,0,,\(body(c.t))\n" }
+    return out
+}
+
+/// Negli mp4 la traccia attiva all'avvio è il flag «enabled» del suo tkhd: lo imposta per le tracce di sottotitoli, nell'ordine (modifica sul posto dell'intestazione).
+func mp4SetSubtitlesEnabled(_ url: URL, _ on: [Bool]) {
+    guard let h = try? FileHandle(forUpdating: url) else { return }
+    defer { try? h.close() }
+    func u32(_ d: Data, _ o: Int) -> Int { d.count >= o + 4 ? Int(d[d.startIndex + o]) << 24 | Int(d[d.startIndex + o + 1]) << 16 | Int(d[d.startIndex + o + 2]) << 8 | Int(d[d.startIndex + o + 3]) : 0 }
+    // trova moov fra i box di primo livello
+    var pos: UInt64 = 0; let end = (try? h.seekToEnd()) ?? 0
+    while pos + 8 <= end {
+        try? h.seek(toOffset: pos); guard let hd = try? h.read(upToCount: 16), hd.count >= 8 else { return }
+        var size = UInt64(u32(hd, 0)); let type = String(decoding: hd[hd.startIndex + 4 ..< hd.startIndex + 8], as: UTF8.self)
+        if size == 1, hd.count >= 16 { size = UInt64(u32(hd, 8)) << 32 | UInt64(u32(hd, 12)) } else if size == 0 { size = end - pos }
+        if type == "moov", size < 512 << 20 {
+            try? h.seek(toOffset: pos); guard let m = try? h.read(upToCount: Int(size)) else { return }
+            var k = 0, o = 8
+            while o + 8 <= m.count {   // ogni trak: hdlr dice il tipo, tkhd porta il flag
+                let sz = u32(m, o), ty = String(decoding: m[m.startIndex + o + 4 ..< m.startIndex + o + 8], as: UTF8.self); guard sz >= 8 else { break }
+                if ty == "trak", let tr = Optional(m.subdata(in: m.startIndex + o ..< m.startIndex + min(m.count, o + sz))) {
+                    let isSub = ["sbtl", "text", "subt"].contains { tr.range(of: Data("hdlr".utf8)).map { r in String(decoding: tr[r.upperBound + 8 ..< r.upperBound + 12], as: UTF8.self) } == $0 }
+                    if isSub, let r = tr.range(of: Data("tkhd".utf8)) {
+                        let flagPos = pos + UInt64(o) + UInt64(r.upperBound - tr.startIndex) + 3   // versione (1 byte) + flag (3 byte): il bit 1 dell'ultimo è «enabled»
+                        var b = tr[r.upperBound + 3]; if k < on.count { b = on[k] ? (b | 1) : (b & ~1) }
+                        try? h.seek(toOffset: flagPos); try? h.write(contentsOf: Data([b])); k += 1
+                    }
+                }
+                o += sz
+            }
+            return
+        }
+        pos += max(size, 8)
+    }
+}
+/// Legge un file di sottotitoli in UTF-8 o, se non lo è, in Windows-1252 (la codifica dei vecchi SRT italiani), e ripara gli accenti rovinati.
+func readSubText(_ url: URL) -> String? {
+    guard let d = try? Data(contentsOf: url) else { return nil }
+    var t = String(data: d, encoding: .utf8) ?? String(data: d, encoding: .windowsCP1252) ?? String(data: d, encoding: .isoLatin1)
+    if t?.hasPrefix("\u{FEFF}") == true { t?.removeFirst() }
+    return t.map { repairMojibake($0.replacingOccurrences(of: "\r\n", with: "\n")) }
 }

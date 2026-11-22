@@ -11,7 +11,7 @@ final class Job: ObservableObject, Identifiable {
     init(_ u: URL) { url = u }
 }
 final class Store: ObservableObject {
-    @Published var jobs: [Job] = []; @Published var selection: UUID?; @Published var modelProgress: Double?; @Published var comparePair: ComparePair?; @Published var compareBusy = false; @Published var compareStatus = ""; @Published var compareProgress = 0.0; @Published var mergeRequest: MergeRequest?; @Published var better: BetterVerdict?; @Published var doubtRequest: DoubtRequest?
+    @Published var jobs: [Job] = []; @Published var selection: UUID?; @Published var modelProgress: Double?; @Published var comparePair: ComparePair?; @Published var compareBusy = false; @Published var compareStatus = ""; @Published var compareProgress = 0.0; @Published var mergeRequest: MergeRequest?; @Published var better: BetterVerdict?; @Published var doubtRequest: DoubtRequest?; @Published var subRequest: SubRequest?
     private let q = DispatchQueue(label: "analisi")   // un film alla volta: le analisi usano già tutti i core
     static let exts: Set<String> = ["mp4", "mkv", "avi", "m4v", "mov"]
     func add(_ urls: [URL]) {
@@ -55,12 +55,20 @@ final class Store: ObservableObject {
             }
         }
     }
+    /// Il file ha un titolo nei metadati? Dal rapporto (gratis) o, se manca, rileggendo l'intestazione.
+    private func hasContainerTitle(_ j: Job) -> Bool {
+        if let rows = j.report?.tech.first(where: { $0.title == "File" })?.rows { return rows.contains { $0.k == "Titolo nei metadati" && !$0.v.isEmpty } }
+        return !(containerTitle(j.url) ?? "").isEmpty
+    }
     /// Applica una correzione (una per volta, dopo l'analisi in corso) e poi rianalizza il film per mostrare l'effetto.
     func fix(_ j: Job, _ plan: FixPlan) {
-        var p = plan; let newBase = p.rename; p.rename = nil; if p.setTitle == nil, let n = newBase { p.setTitle = n }   // il titolo nei metadati segue il nuovo nome
-        let source = j.url, editing = j.hasCorrected, orig = j.origURL ?? j.url, origReport = j.origReport ?? j.report
+        var p = plan; let newBase = p.rename; p.rename = nil
+        // il titolo nei metadati segue il nuovo nome, ma solo se il file ne ha uno o se cambiarlo costa poco (mkv): in un mp4 senza titolo rinominare non deve riscrivere il film
+        if p.setTitle == nil, !p.clearTitle, let n = newBase, j.url.pathExtension.lowercased() == "mkv" || hasContainerTitle(j) { p.setTitle = n }
+        let source = j.url, editing = j.hasCorrected, orig = j.origURL ?? j.url, origReport = j.origReport ?? j.report, oldReport = j.report
         let labelsOnly = !p.changesContent   // solo impostazioni (titolo, lingue, tracce predefinite, nome): si cambiano nel file stesso, senza nuova versione né confronto
-        let output = editing || labelsOnly ? j.url : correctedURL(for: j.url, rename: newBase)
+        let changeExt = p.outputExt.map { $0 != j.url.pathExtension.lowercased() } ?? false   // nuovo formato: sempre una copia nuova, anche partendo da una copia corretta
+        let output = (editing || labelsOnly) && !changeExt ? j.url : correctedURL(for: j.url, rename: newBase, ext: p.outputExt)
         j.fixProgress = 0; j.fixStage = "In attesa…"; j.fixResult = nil
         q.async {
             var r: FixResult
@@ -77,7 +85,9 @@ final class Store: ObservableObject {
                 if (try? FileManager.default.moveItem(at: output, to: dest)) != nil { r = FixResult(ok: true, message: r.message + " Rinominata in «\(dest.lastPathComponent)».", lines: r.lines, backup: nil, newURL: dest) }
             }
             let target = r.newURL ?? output
-            let rep = r.ok ? analyze(target) : nil
+            // solo impostazioni: immagine e audio non sono cambiati, basta rileggere l'intestazione (un attimo invece di una nuova analisi completa)
+            if r.ok { DispatchQueue.main.async { j.fixStage = "Ricontrollo…" } }
+            let rep = r.ok ? ((labelsOnly ? oldReport.flatMap { refreshAfterLabels($0, target, applied: plan) } : nil) ?? analyze(target)) : nil
             DispatchQueue.main.async {
                 if r.ok { if !labelsOnly, j.origURL == nil { j.origURL = orig; j.origReport = origReport }; j.url = target; if !labelsOnly { j.fixLog += r.lines } }
                 j.fixResult = r; j.fixProgress = nil; if let rep = rep { j.report = rep; setVerdictTag(target, ok: rep.essential.isEmpty) }
@@ -113,7 +123,7 @@ final class Store: ObservableObject {
             var after: Report?
             if r.ok {
                 DispatchQueue.main.async { j.fixStage = "Ricontrollo il film corretto…" }
-                let ar = analyze(output) { v, _ in DispatchQueue.main.async { j.fixProgress = 0.8 + v * 0.2 } }
+                let ar = (labelsOnly ? refreshAfterLabels(rep, output, applied: pp.plan) : nil) ?? analyze(output) { v, _ in DispatchQueue.main.async { j.fixProgress = 0.8 + v * 0.2 } }
                 if let why = checkPrepared(before: rep, after: ar, fixLines: r.lines) {
                     if labelsOnly && !editing { _ = try? FileManager.default.replaceItemAt(output, withItemAt: bak) }
                     else if !editing { try? FileManager.default.trashItem(at: output, resultingItemURL: nil) }
@@ -223,6 +233,7 @@ final class Store: ObservableObject {
             let ds = l.split(separator: ";").compactMap { x -> DubDoubt? in let p = x.split(separator: ":"); let r = p[0].split(separator: "-").compactMap { Double($0) }; guard p.count == 2, r.count == 2 else { return nil }; return DubDoubt(start: r[0], end: r[1], options: p[1].split(separator: ",").compactMap { Double($0) }, weak: false) }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.doubtRequest = DoubtRequest(url: URL(fileURLWithPath: f), track: 0, doubts: ds) }
         }
+        if let f = e["BOOTH_SUBS"] { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.subRequest = SubRequest(url: URL(fileURLWithPath: f), meta: nil, fps: filmFps(URL(fileURLWithPath: f))) } }
         if let a = e["BOOTH_COMPARE_A"], let b = e["BOOTH_COMPARE_B"] { DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.compare([URL(fileURLWithPath: a), URL(fileURLWithPath: b)]) } }
     }
     func open() { guard !compareBusy else { return }; let p = NSOpenPanel(); p.allowsMultipleSelection = true; p.canChooseDirectories = true; p.message = "Scegli uno o più film"; if p.runModal() == .OK { add(p.urls) } }
@@ -252,6 +263,7 @@ struct ContentView: View {
                                                          fixDub: { store.better = nil; if let d = v.dub { store.fixDub(v.urls, d) } }) }
         .sheet(item: $store.doubtRequest) { req in DoubtView(req: req) { r in
             if r?.ok == true, let j = store.jobs.first(where: { $0.url.standardizedFileURL == req.url.standardizedFileURL }) { j.fixLog += r?.lines ?? []; store.startAnalysis(j) } } }
+        .sheet(item: $store.subRequest) { r in SubtitleSearchView(req: r, store: store) }
         .sheet(item: $store.comparePair) { pair in CompareView(pair: pair, swap: { store.comparePair = nil; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { store.comparePair = pair.swapped } }) }
         .onDrop(of: [.fileURL], isTargeted: $hover) { ps in
             guard !store.compareBusy else { return false }
@@ -262,6 +274,7 @@ struct ContentView: View {
             if !store.jobs.isEmpty && !store.compareBusy {   // sulla schermata iniziale le tre scelte ci sono già
                 ToolbarItem { Button { store.mergeFiles() } label: { Label("Unisci due copie", systemImage: "arrow.triangle.merge") }.help("Unisci due copie: immagine migliore da una, audio italiano dall'altra") }
                 ToolbarItem { Button { store.compareFiles() } label: { Label("Confronta due film", systemImage: "rectangle.split.2x1") }.help("Quale delle due copie è meglio e perché") }
+                ToolbarItem { Button { store.findSubtitles(store.jobs.first { $0.id == store.selection }) } label: { Label("Trova i sottotitoli", systemImage: "captions.bubble") }.help("Cerca online i sottotitoli adatti al film e controlla che siano a tempo") }
                 ToolbarItem { Button { store.open() } label: { Label("Controlla un altro film", systemImage: "plus") }.help("Controlla un altro film") } }
         }
     }
@@ -298,7 +311,8 @@ struct DropHint: View {
                 Choice(icon: "checkmark.seal", title: "Controlla un film", text: "Immagine, audio e sottotitoli: lingue, volume, sincronia, crediti del torrent e difetti tecnici. Poi lo corregge in una copia nuova.", button: "Scegli un film…", primary: true) { store.open() }
                 Choice(icon: "arrow.triangle.merge", title: "Unisci due copie", text: "Prende l'immagine migliore da una copia e l'audio italiano dall'altra, li allinea e te li fa controllare prima di salvare.", button: "Scegli le due copie…") { store.mergeFiles() }
                 Choice(icon: "rectangle.split.2x1", title: "Confronta due film", text: "Due copie dello stesso film: ti dice quale è meglio per la sala e perché (immagine, audio italiano, sottotitoli, problemi).", button: "Scegli i due film…") { store.compareFiles() }
-            }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: 820)
+                Choice(icon: "captions.bubble", title: "Trova i sottotitoli", text: "Cerca online quelli fatti per il tuo file, li salva accanto al film e controlla sul parlato che siano a tempo.", button: "Scegli un film…") { store.findSubtitles() }
+            }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: 1060)
             Text("Il file originale non viene mai modificato: ogni correzione o unione crea una copia nuova accanto.").font(.caption).foregroundStyle(.tertiary)
             HStack(spacing: 6) {
                 Image(systemName: "videoprojector").foregroundStyle(.tertiary)

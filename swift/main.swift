@@ -7,6 +7,35 @@ if let f = arg("--analyze").first {
     let r = analyze(URL(fileURLWithPath: f)) { p, s in FileHandle.standardError.write(Data(String(format: "\r%3.0f%% %@                    ", p * 100, s).utf8)) }
     FileHandle.standardError.write(Data("\n".utf8)); if CommandLine.arguments.contains("--tag") { setVerdictTag(URL(fileURLWithPath: f), ok: r.essential.isEmpty) }; print(r.text); print(String(format: "(analisi in %.0f s)", r.seconds)); exit(0)
 }
+if let f = arg("--refresh-check").first {   // collaudo: la rilettura rapida dopo un cambio di impostazioni deve dare le stesse segnalazioni dell'analisi completa
+    let u = URL(fileURLWithPath: f); let full = analyze(u)
+    guard let quick = refreshAfterLabels(full, u, applied: FixPlan()) else { print("rilettura non riuscita"); exit(1) }
+    let a = Set(full.findings.map(\.sig)), b = Set(quick.findings.map(\.sig))
+    let ra = Set(full.tech.flatMap { s in s.rows.map { s.title + "|" + $0.k + "=" + $0.v } }), rb = Set(quick.tech.flatMap { s in s.rows.map { s.title + "|" + $0.k + "=" + $0.v } })
+    print(a == b && ra == rb ? "uguali" : "diverse: segnalazioni solo complete \(a.subtracting(b).sorted()) solo rapide \(b.subtracting(a).sorted()) · dati solo completi \(ra.subtracting(rb).sorted()) solo rapidi \(rb.subtracting(ra).sorted())")
+    print(String(format: "analisi completa %.1f s · rilettura rapida %.2f s", full.seconds, quick.seconds)); exit(a == b && ra == rb ? 0 : 1)
+}
+if let i = CommandLine.arguments.firstIndex(of: "--burned"), i + 2 < CommandLine.arguments.count {   // collaudo: --burned FILM FILE.srt → sottotitoli impressi nell'immagine
+    let c = CommandLine.arguments, u = URL(fileURLWithPath: c[i + 1])
+    let b = burnedInSubtitles(u, cues: parseSRT(readSubText(URL(fileURLWithPath: c[i + 2])) ?? ""), duration: Probe(u.path)?.duration ?? 0)
+    print(b.map { String(format: "impressi: fino al %.1f%% dell'altezza, nel %.0f%% dei momenti, lingua %@ — «%@»", $0.top * 100, $0.share * 100, $0.lang ?? "?", $0.sample) } ?? "nessun sottotitolo impresso"); exit(0)
+}
+if let f = arg("--hash").first { print(movieHash(URL(fileURLWithPath: f)) ?? "impronta non calcolabile"); exit(0) }
+if let i = CommandLine.arguments.firstIndex(of: "--sub-sync"), i + 2 < CommandLine.arguments.count {   // collaudo: --sub-sync FILM FILE.srt [--retime] → sincronia di un sottotitolo esterno col parlato del film
+    let c = CommandLine.arguments, film = URL(fileURLWithPath: c[i + 1]), sub = URL(fileURLWithPath: c[i + 2])
+    guard let t = readSubText(sub) else { print("sottotitolo illeggibile"); exit(1) }
+    guard let wins = FilmSpeech(film).get() else { print("serve il modello vocale (o il film è troppo corto)"); exit(1) }
+    let d = describeSync(globalSubSync(parseSRT(t).filter { !$0.t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }, wins, FilmSpeech.len))
+    print(d.text + (d.fix.map { String(format: " → correzione a=%.5f b=%+.2f", $0.a, $0.b) } ?? ""))
+    if CommandLine.arguments.contains("--retime"), let f = d.fix { try? retimeSRT(t, a: f.a, b: f.b).write(to: sub, atomically: true, encoding: .utf8); print("tempi corretti in \(sub.lastPathComponent)") }
+    exit(d.ok == false ? 2 : 0)
+}
+if let f = arg("--sub-search").first {   // collaudo: --sub-search FILM [--langs it,en] (chiave in BOOTH_OS_KEY o nelle preferenze)
+    let u = URL(fileURLWithPath: f), p = parseFileName(u)
+    do { for r in try OpenSubtitles.search(film: u, title: p.title, year: p.year, imdb: nil, langs: (arg("--langs").first ?? "it").components(separatedBy: ","), fps: filmFps(u)).prefix(15) { print(String(format: "%6.1f %@ %@ %@ fps %.3f · %d dl · %@", r.score, r.lang, r.hashMatch ? "HASH" : "    ", r.machine ? "AUTO" : "    ", r.fps, r.downloads, r.release)) } }
+    catch { print(error.localizedDescription); exit(1) }
+    exit(0)
+}
 if let f = arg("--dialogue").first {   // prova: --dialogue FILE ORD
     let ord = Int(arg("--dialogue-ord").first ?? "0") ?? 0
     if let d = dialogueStats(f, ord) { print(String(format: "centro %.1f  fronte %.1f  >6LU %.1f%%  >10LU %.1f%%  (%d s con parlato)  peggiori: %@", d.centerMedian, d.frontMedian, d.coveredPct, d.covered10Pct, d.seconds, d.worst.prefix(5).map { "\(hms(Double($0.0)))(\(Int($0.1)))" }.joined(separator: " "))) } else { print("non misurabile") }
@@ -110,7 +139,7 @@ if let f = arg("--fix").first {
     if let s = arg("--sub-default").first { p.subDefault = s == "none" ? .none : Int(s).map { .track($0) } ?? .keep }
     for l in arg("--lang") { for kv in l.split(separator: ",") { let x = kv.split(separator: "="); if x.count == 2 { p.lang[String(x[0])] = String(x[1]) } } }
     arg("--clean-sub").compactMap { Int($0) }.forEach { p.cleanSubs.insert($0) }; arg("--drop-sub").compactMap { Int($0) }.forEach { p.dropSubs.insert($0) }
-    arg("--drop-audio").compactMap { Int($0) }.forEach { p.dropAudio.insert($0) }; arg("--normalize").compactMap { Int($0) }.forEach { p.normalize.insert($0) }; if let r = arg("--rename").first { p.rename = r }; arg("--repair-sub").compactMap { Int($0) }.forEach { p.repairSubs.insert($0) }; for v in arg("--forced") { let x = v.split(separator: ":"); if x.count == 2, let i = Int(x[0]) { p.forcedFlags[i] = x[1] == "1" } }; if CommandLine.arguments.contains("--tonemap") { p.tonemap = true }; if CommandLine.arguments.contains("--deinterlace") { p.deinterlace = true }; for v in arg("--sync-sub") { let x = v.split(separator: ":").compactMap { Double($0) }; if x.count == 3 { p.syncSubs[Int(x[0])] = (x[1], x[2]) } }; if CommandLine.arguments.contains("--clear-title") { p.clearTitle = true }; arg("--dolby").compactMap { Int($0) }.forEach { p.toDolby.insert($0) }; for v in arg("--shift-audio") { let x = v.split(separator: ":").compactMap { Double($0) }; if x.count == 4 { p.shiftAudio[Int(x[0]), default: []].append(AudioShift(start: x[1], end: x[2], shift: x[3])) } }; for v in arg("--retime-dub") { let x = v.split(separator: ":").compactMap { Int($0) }; if x.count == 2 { p.retimeDub[x[0]] = x[1] } }; arg("--level").compactMap { Int($0) }.forEach { p.levelGain.insert($0) }; if let d = arg("--boost-db").first.flatMap({ Double($0) }) { p.centerDB = d }; arg("--boost-center").compactMap { Int($0) }.forEach { p.boostCenter.insert($0) }
+    arg("--drop-audio").compactMap { Int($0) }.forEach { p.dropAudio.insert($0) }; arg("--normalize").compactMap { Int($0) }.forEach { p.normalize.insert($0) }; if let r = arg("--rename").first { p.rename = r }; for v in arg("--add-sub") { let x = v.components(separatedBy: ":"); if x.count >= 2 { p.addSubs.append(AddedSub(file: URL(fileURLWithPath: x[0]), lang: x[1], isDefault: x.contains("default"), position: x.first { $0.hasPrefix("pos=") }.flatMap { Double($0.dropFirst(4)) }, cover: x.first { $0.hasPrefix("cover=") }.flatMap { Double($0.dropFirst(6)) })) } }; if let e = arg("--output-ext").first { p.outputExt = e }; arg("--repair-sub").compactMap { Int($0) }.forEach { p.repairSubs.insert($0) }; for v in arg("--forced") { let x = v.split(separator: ":"); if x.count == 2, let i = Int(x[0]) { p.forcedFlags[i] = x[1] == "1" } }; if CommandLine.arguments.contains("--tonemap") { p.tonemap = true }; if CommandLine.arguments.contains("--deinterlace") { p.deinterlace = true }; for v in arg("--sync-sub") { let x = v.split(separator: ":").compactMap { Double($0) }; if x.count == 3 { p.syncSubs[Int(x[0])] = (x[1], x[2]) } }; if CommandLine.arguments.contains("--clear-title") { p.clearTitle = true }; arg("--dolby").compactMap { Int($0) }.forEach { p.toDolby.insert($0) }; for v in arg("--shift-audio") { let x = v.split(separator: ":").compactMap { Double($0) }; if x.count == 4 { p.shiftAudio[Int(x[0]), default: []].append(AudioShift(start: x[1], end: x[2], shift: x[3])) } }; for v in arg("--retime-dub") { let x = v.split(separator: ":").compactMap { Int($0) }; if x.count == 2 { p.retimeDub[x[0]] = x[1] } }; arg("--level").compactMap { Int($0) }.forEach { p.levelGain.insert($0) }; if let d = arg("--boost-db").first.flatMap({ Double($0) }) { p.centerDB = d }; arg("--boost-center").compactMap { Int($0) }.forEach { p.boostCenter.insert($0) }
     for v in arg("--erase-at") { let n = v.split(separator: ",").compactMap { Double($0) }; if n.count == 6 { p.eraseText.append(EraseRegion(x: n[0], y: n[1], w: n[2], h: n[3], from: n[4], to: n[5], label: "prova")) } }   // prova: x,y,w,h (frazioni, origine in alto a sinistra),da,a
     if CommandLine.arguments.contains("--erase-text") { analyze(URL(fileURLWithPath: f)) { _, _ in }.findings.flatMap(\.fixes).forEach { if case .eraseText = $0 { p.merge($0) } } }   // cancella le scritte pubblicitarie che l'analisi trova nei primi secondi
     // di default il risultato è una copia «… (corretto)» accanto al file: l'originale non viene mai toccato. --output PATH sceglie il nome, --replace modifica il file indicato (solo per copie già corrette e per i test)

@@ -32,7 +32,7 @@ func transcribe(_ pr: Probe, _ path: String, audio k: Int, start: Double, len: D
     for s in j["transcription"] as? [[String: Any]] ?? [] {
         guard let o = s["offsets"] as? [String: Any], let f = dbl(o["from"]), let t = dbl(o["to"]), t > f else { continue }
         let text = ((s["text"] as? String) ?? "").trimmingCharacters(in: .whitespaces)
-        if text.count < 3 || text.hasPrefix("[") || text.hasPrefix("(") || text.hasPrefix("♪") { continue }   // musica, rumori, tag
+        if text.count < 3 || text.hasPrefix("[") || text.hasPrefix("(") || text.hasPrefix("*") || text.hasPrefix("♪") { continue }   // musica, rumori, tag
         segs.append((start + f / 1000, start + t / 1000))
     }
     let raw = segs.reduce(0) { $0 + $1.1 - $1.0 }
@@ -113,29 +113,87 @@ func scanSpeech(_ pr: Probe, _ path: String, _ tmp: URL, _ c: Collector, model: 
         let f = tmp.appendingPathComponent("sync\(i).srt"); run(ff, ["-nostdin", "-y", "-v", "error", "-i", path, "-map", "0:s:\(i)", "-f", "srt", f.path])
         guard let txt = try? String(contentsOf: f, encoding: .utf8) else { continue }
         let cues = parseSRT(txt).filter { !$0.t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }; guard cues.count >= 50 else { continue }
-        let res = mainWins.compactMap { w -> (Double, Double, Double, Double)? in alignCues(speech: w.segments, cues: cues, window: (w.start, w.start + L)).map { ($0.delta, $0.base, $0.best, w.start) } }
-        guard res.count >= 2 else { continue }
-        if ProcessInfo.processInfo.environment["BOOTH_DEBUG"] != nil { FileHandle.standardError.write(Data("sync sottotitoli \(i + 1): \(res.map { String(format: "t=%.0f δ=%+.2f base=%.2f best=%.2f", $0.3, $0.0, $0.1, $0.2) })\n".utf8)) }
         let n = "sottotitoli \(i + 1)" + (lang(s).isEmpty ? "" : " (\(langLabel(lang(s))))")
-        // per ogni tratto: allineato (la correlazione senza spostamento è già alta), sfasato (uno spostamento la alza nettamente) o inutilizzabile
-        enum K { case aligned, shifted(Double), unknown }
-        let kinds: [K] = res.map { r in r.1 >= 0.25 && r.2 - r.1 < 0.1 ? .aligned : (r.2 >= 0.25 && r.2 >= r.1 + 0.15 ? .shifted(r.0) : .unknown) }
-        let usable = kinds.filter { if case .unknown = $0 { return false }; return true }; guard usable.count >= 2 else { continue }
-        let shifts: [Double] = kinds.compactMap { if case .shifted(let d) = $0 { return d }; return nil }
-        if shifts.isEmpty { c.rows("Sottotitoli \(i + 1)", order: 30 + i, [("Sincronia con il parlato", "verificata in \(usable.count) tratti")]); continue }
-        guard shifts.count == usable.count else { continue }   // tratti discordi: nessuna conclusione
-        if (shifts.max()! - shifts.min()!) <= 0.8 {
-            let dl = shifts.reduce(0, +) / Double(shifts.count)
+        switch subSync(cues, mainWins, L, debug: "sottotitoli \(i + 1)") {
+        case .unknown: continue
+        case .aligned(let k): c.rows("Sottotitoli \(i + 1)", order: 30 + i, [("Sincronia con il parlato", "verificata in \(k) tratti")])
+        case .shifted(let dl, let k, let t):
             c.rows("Sottotitoli \(i + 1)", order: 30 + i, [("Sfasamento rispetto al parlato", String(format: "%+.1f s", dl))])
-            if abs(dl) >= 1.0 { c.add(.warn, "Sottotitoli", String(format: "Sottotitoli sfasati di %.1f s — %@", abs(dl), n), String(format: "Rispetto al parlato risultano %@ di circa %.1f s (misurato in %d tratti del film).", dl < 0 ? "in ritardo" : "in anticipo", abs(dl), shifts.count), time: res[0].3, fix: [.syncSubs(i, 1, dl)]) }
-        } else {
-            // lo spostamento cresce con il tempo: retta delta = b + (a-1)·t, tipica di un frame rate diverso
-            let ts = res.map(\.3); let t0 = ts.first!, t1 = ts.last!, d0 = shifts.first!, d1 = shifts.last!; let slope = (d1 - d0) / (t1 - t0); let a = 1 + slope, b = d0 - slope * t0
-            let known: [(Double, String)] = [(25 / 23.976, "25 → 23,976 fps"), (23.976 / 25, "23,976 → 25 fps"), (24 / 23.976, "24 → 23,976 fps"), (23.976 / 24, "23,976 → 24 fps"), (25 / 24, "25 → 24 fps"), (24 / 25, "24 → 25 fps"), (30 / 29.97, "30 → 29,97 fps"), (29.97 / 30, "29,97 → 30 fps")]
-            let kn = known.min { abs($0.0 - a) < abs($1.0 - a) }!
-            let match = abs(kn.0 - a) < 0.0008
-            c.add(.warn, "Sottotitoli", "Sottotitoli che si sfasano col passare del tempo — \(n)", String(format: "Lo sfasamento passa da %+.1f s a %+.1f s tra i tratti misurati: tipico di un frame rate diverso%@.", d0, d1, match ? " (\(kn.1))" : ""), time: res[0].3, fix: match ? [.syncSubs(i, kn.0, b)] : [])
+            if abs(dl) >= 1.0 { c.add(.warn, "Sottotitoli", String(format: "Sottotitoli sfasati di %.1f s — %@", abs(dl), n), String(format: "Rispetto al parlato risultano %@ di circa %.1f s (misurato in %d tratti del film).", dl < 0 ? "in ritardo" : "in anticipo", abs(dl), k), time: t, fix: [.syncSubs(i, 1, dl)]) }
+        case .drift(let d0, let d1, let a, let b, let label, let t):
+            c.add(.warn, "Sottotitoli", "Sottotitoli che si sfasano col passare del tempo — \(n)", String(format: "Lo sfasamento passa da %+.1f s a %+.1f s tra i tratti misurati: tipico di un frame rate diverso%@.", d0, d1, label.map { " (\($0))" } ?? ""), time: t, fix: label != nil ? [.syncSubs(i, a, b)] : [])
         }
     }
     progress(1)
+}
+
+/// Esito della sincronia di un sottotitolo con il parlato: a tempo, spostato di un tanto fisso, o che si sfasa col tempo (frame rate diverso).
+enum SubSyncResult { case unknown, aligned(Int), shifted(Double, Int, Double), drift(Double, Double, Double, Double, String?, Double) }   // shifted: spostamento, tratti, primo istante; drift: da, a, coefficienti a·t+b, frame rate riconosciuto, primo istante
+/// Confronta le battute con i tratti di parlato riconosciuti da whisper (finestre di `len` secondi): servono almeno due tratti concordi.
+func subSync(_ cues: [Cue], _ wins: [SpeechWindow], _ len: Double, debug: String = "") -> SubSyncResult {
+    let res = wins.compactMap { w -> (Double, Double, Double, Double)? in alignCues(speech: w.segments, cues: cues, window: (w.start, w.start + len)).map { ($0.delta, $0.base, $0.best, w.start) } }
+    guard res.count >= 2 else { return .unknown }
+    if ProcessInfo.processInfo.environment["BOOTH_DEBUG"] != nil { FileHandle.standardError.write(Data("sync \(debug): \(res.map { String(format: "t=%.0f δ=%+.2f base=%.2f best=%.2f", $0.3, $0.0, $0.1, $0.2) })\n".utf8)) }
+    // per ogni tratto: allineato (la correlazione senza spostamento è già alta), sfasato (uno spostamento la alza nettamente) o inutilizzabile
+    enum K { case aligned, shifted(Double), unknown }
+    let kinds: [K] = res.map { r in r.1 >= 0.25 && r.2 - r.1 < 0.1 ? .aligned : (r.2 >= 0.25 && r.2 >= r.1 + 0.15 ? .shifted(r.0) : .unknown) }
+    let usable = kinds.filter { if case .unknown = $0 { return false }; return true }; guard usable.count >= 2 else { return .unknown }
+    let shifts: [Double] = kinds.compactMap { if case .shifted(let d) = $0 { return d }; return nil }
+    if shifts.isEmpty { return .aligned(usable.count) }
+    guard shifts.count == usable.count else { return .unknown }   // tratti discordi: nessuna conclusione
+    if (shifts.max()! - shifts.min()!) <= 0.8 { return .shifted(shifts.reduce(0, +) / Double(shifts.count), shifts.count, res[0].3) }
+    // lo spostamento cresce con il tempo: retta delta = b + (a-1)·t, tipica di un frame rate diverso
+    let ts = res.map(\.3); let t0 = ts.first!, t1 = ts.last!, d0 = shifts.first!, d1 = shifts.last!; let slope = (d1 - d0) / (t1 - t0); let a = 1 + slope, b = d0 - slope * t0
+    let known: [(Double, String)] = [(25 / 23.976, "25 → 23,976 fps"), (23.976 / 25, "23,976 → 25 fps"), (24 / 23.976, "24 → 23,976 fps"), (23.976 / 24, "23,976 → 24 fps"), (25 / 24, "25 → 24 fps"), (24 / 25, "24 → 25 fps"), (30 / 29.97, "30 → 29,97 fps"), (29.97 / 30, "29,97 → 30 fps")]
+    let kn = known.min { abs($0.0 - a) < abs($1.0 - a) }!
+    return abs(kn.0 - a) < 0.0008 ? .drift(d0, d1, kn.0, b, kn.1, res[0].3) : .drift(d0, d1, a, b, nil, res[0].3)
+}
+
+/// Sincronia di un sottotitolo esterno su tutto il film insieme: si cerca un'unica regola «tempo giusto = a·tempo + b» (a = 1: spostamento fisso;
+/// a = rapporto tra frame rate noti: 25 ↔ 23,976 ecc.) che faccia coincidere le battute con il parlato in tutti i tratti ascoltati.
+/// Più robusta della misura tratto per tratto, che su un tratto con poco parlato può trovare uno spostamento casuale.
+func globalSubSync(_ cues: [Cue], _ wins: [SpeechWindow], _ len: Double) -> SubSyncResult {
+    let dt = 0.25
+    struct W { var lo: Double; var sp: [Double] }
+    let ws: [W] = wins.compactMap { w in
+        let n = Int(len / dt); var sp = [Double](repeating: 0, count: n)
+        for s in w.segments { for i in max(0, Int((s.0 - w.start) / dt))..<max(0, min(n, Int((s.1 - w.start) / dt) + 1)) { sp[i] = 1 } }
+        return sp.reduce(0, +) >= 20 ? W(lo: w.start, sp: sp) : nil   // almeno 5 s di parlato
+    }
+    guard ws.count >= 2, cues.count >= 30 else { return .unknown }
+    let all = ws.flatMap(\.sp), n = Double(all.count), mS = all.reduce(0, +) / n, vS = all.reduce(0) { $0 + ($1 - mS) * ($1 - mS) }
+    guard vS > 0 else { return .unknown }
+    /// correlazione di Pearson su tutti i tratti insieme, e quella di ciascun tratto
+    func corr(_ a: Double, _ b: Double, perWindow: Bool = false) -> (Double, [Double]) {
+        var ca: [[Double]] = ws.map { [Double](repeating: 0, count: $0.sp.count) }
+        for q in cues { let s = a * q.s + b, e = a * q.e + b
+            for (k, w) in ws.enumerated() where e >= w.lo && s <= w.lo + len { for i in max(0, Int((s - w.lo) / dt))..<max(0, min(w.sp.count, Int((e - w.lo) / dt) + 1)) { ca[k][i] = 1 } } }
+        func pearson(_ x: [Double], _ y: [Double]) -> Double {
+            let m = Double(x.count), mx = x.reduce(0, +) / m, my = y.reduce(0, +) / m; var c = 0.0, vx = 0.0, vy = 0.0
+            for i in x.indices { c += (x[i] - mx) * (y[i] - my); vx += (x[i] - mx) * (x[i] - mx); vy += (y[i] - my) * (y[i] - my) }
+            return vx > 0 && vy > 0 ? c / (vx * vy).squareRoot() : 0
+        }
+        let tot = pearson(all, ca.flatMap { $0 })
+        return (tot, perWindow ? ws.indices.map { pearson(ws[$0].sp, ca[$0]) } : [])
+    }
+    let ratios: [(Double, String?)] = [(1, nil), (25 / 23.976, "25 → 23,976 fps"), (23.976 / 25, "23,976 → 25 fps"), (24 / 23.976, "24 → 23,976 fps"), (23.976 / 24, "23,976 → 24 fps"), (25 / 24, "25 → 24 fps"), (24 / 25, "24 → 25 fps"), (30 / 29.97, "30 → 29,97 fps"), (29.97 / 30, "29,97 → 30 fps")]
+    var best: [(a: Double, label: String?, b: Double, c: Double)] = []
+    for (a, label) in ratios {
+        var top = (b: 0.0, c: -2.0), b = -120.0
+        while b <= 120 { let c = corr(a, b).0; if c > top.c { top = (b, c) }; b += 0.5 }
+        var fine = top; b = top.b - 0.6
+        while b <= top.b + 0.6 { let c = corr(a, b).0; if c > fine.c { fine = (b, c) }; b += 0.05 }
+        best.append((a, label, fine.b, fine.c))
+    }
+    let base = corr(1, 0).0, shift = best[0], drift = best.dropFirst().max { $0.c < $1.c }!
+    if ProcessInfo.processInfo.environment["BOOTH_DEBUG"] != nil { FileHandle.standardError.write(Data(String(format: "sincronia globale: senza spostamento %.2f · spostamento %+.2f s → %.2f · frame rate %@ %+.2f s → %.2f\n", base, shift.b, shift.c, drift.label ?? "", drift.b, drift.c).utf8)) }
+    let pick = drift.c > shift.c + 0.04 ? drift : shift
+    guard pick.c >= 0.3 else { return .unknown }
+    // la regola deve funzionare in quasi tutti i tratti, non solo nella somma
+    let per = corr(pick.a, pick.b, perWindow: true).1, good = per.filter { $0 >= 0.2 }.count
+    guard good >= max(2, ws.count - 1) else { return .unknown }
+    if pick.a == 1 && (abs(pick.b) < 0.3 || pick.c - base < 0.03) { return base >= 0.25 ? .aligned(good) : .unknown }
+    if pick.a == 1 { return .shifted(pick.b, good, ws[0].lo) }
+    let t0 = ws.first!.lo + len / 2, t1 = ws.last!.lo + len / 2
+    return .drift((pick.a - 1) * t0 + pick.b, (pick.a - 1) * t1 + pick.b, pick.a, pick.b, pick.label, ws[0].lo)
 }

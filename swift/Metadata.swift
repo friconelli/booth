@@ -3,7 +3,7 @@ import Foundation
 /// Dati del film da Wikidata e Wikipedia (liberi, senza chiave). Servono solo il titolo e l'anno ricavati dal nome del file.
 struct MovieMeta {
     var wikidataID: String; var title: String; var originalTitle: String?; var year: Int?; var directors: [String] = []; var runtimeMin: Double?
-    var originalLang: String?; var posterURL: URL?; var summary: String?
+    var originalLang: String?; var posterURL: URL?; var summary: String?; var imdbID: String?
     /// Nome file secondo la convenzione della libreria: «Titolo (Anno - Regista)».
     var libraryName: String {
         let t = title.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: " -")
@@ -56,6 +56,7 @@ func fetchMovieMeta(for url: URL) -> MovieMeta? {
     let e = best.e; let (it, en) = label(e)
     var m = MovieMeta(wikidataID: best.id, title: it ?? en ?? p.title, originalTitle: en != it ? en : nil)
     m.year = claims(e, "P577").compactMap { ($0["time"] as? String).flatMap { Int($0.dropFirst().prefix(4)) } }.min()
+    m.imdbID = ((e["claims"] as? [String: Any])?["P345"] as? [[String: Any]])?.compactMap { (($0["mainsnak"] as? [String: Any])?["datavalue"] as? [String: Any])?["value"] as? String }.first
     m.runtimeMin = claims(e, "P2047").compactMap { ($0["amount"] as? String).flatMap { Double($0) } }.first
     let dirIDs = claims(e, "P57").compactMap { $0["id"] as? String }, langID = claims(e, "P364").compactMap { $0["id"] as? String }.first
     if let r2 = httpJSON("https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&props=labels|claims&languages=it|en&ids=\((dirIDs.prefix(4) + (langID.map { [$0] } ?? [])).joined(separator: "|"))"), let e2 = r2["entities"] as? [String: Any] {

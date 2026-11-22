@@ -6,7 +6,7 @@ enum Sev: Int, Comparable { case ok, info, warn, error
 }
 /// Correzione suggerita da una segnalazione (i numeri sono posizioni all'interno del proprio tipo: audio 0, 1…, sottotitoli 0, 1…).
 enum FixHint { case defaultAudio(Int), defaultSub(Int?), setLang(String, Int), cleanSub(Int), dropSub(Int), eraseText(EraseRegion), normalize(Int), boostCenter(Int), levelGain(Int), deinterlace, toDolby(Int), clearTitle, setTitle(String), tonemap, repairEncoding(Int), setForced(Int, Bool), rename(String), setLangTo(String, Int, String), syncSubs(Int, Double, Double), retimeDub(Int, Int) }   // syncSubs: tempo nuovo = a·tempo + b; retimeDub: doppiaggio da rimettere a tempo sulla traccia originale (doppiaggio, riferimento)
-struct Finding: Identifiable { let id = UUID(); var sev: Sev; var area: String; var title: String; var detail: String; var time: Double?; var thumb: URL?; var fixes: [FixHint] = [] }
+struct Finding: Identifiable { let id = UUID(); var sev: Sev; var area: String; var title: String; var detail: String; var time: Double?; var thumb: URL?; var fixes: [FixHint] = []; var quick = false }   // quick: dai controlli rapidi dell'intestazione, che si rifanno in un attimo dopo un cambio di impostazioni
 extension Finding { var sig: String { area + "|" + title } }
 /// Segnalazioni che l'utente ha verificato a mano e giudicato non importanti: restano escluse anche rianalizzando il film (e la sua copia «(corretto)»).
 enum Dismissals {
@@ -19,7 +19,7 @@ enum Dismissals {
     }
 }
 struct TrackInfo: Identifiable { var id: Int { ord }; var ord: Int; var lang: String; var title: String; var codec: String; var channels: Int; var isDefault: Bool; var forced: Bool; var image: Bool; var bitrate: Double }
-struct KV: Identifiable { let id = UUID(); var k: String; var v: String }
+struct KV: Identifiable { let id = UUID(); var k: String; var v: String; var quick = false }
 struct Section: Identifiable { let id = UUID(); var title: String; var order: Int; var rows: [KV] }
 
 /// Indispensabile per la sala = visibile o udibile dal pubblico, oppure rompe la riproduzione. Tutto il resto è una miglioria facoltativa.
@@ -28,7 +28,7 @@ func isEssential(_ f: Finding) -> Bool {
     guard f.sev == .warn else { return false }
     let essentialWarnings = ["Sottotitoli attivi di default", "La lingua parlata non corrisponde", "sfasati", "si sfasano", "finiscono molto prima del film", "più lunghi del film", "iniziano molto tardi",
                              "Buco nel flusso video", "Buco nell'audio", "L'audio finisce prima", "finiscono a istanti diversi", "non partono insieme", "Errori di decodifica", "Schermo nero di",
-                             "HDR (", "Dolby Vision profilo 5", "Video interlacciato", "dura meno del previsto", "non è a tempo con l'originale"]
+                             "HDR (", "Dolby Vision profilo 5", "Video interlacciato", "dura meno del previsto", "non è a tempo con l'originale", "Parti in un'altra lingua"]
     return essentialWarnings.contains { f.title.contains($0) }
 }
 
@@ -73,5 +73,12 @@ final class Collector {
         lock.lock(); var s = secs[title] ?? Section(title: title, order: order, rows: []); s.rows += kv.map { KV(k: $0.0, v: $0.1) }; secs[title] = s; lock.unlock()
     }
     var findings: [Finding] { lock.lock(); defer { lock.unlock() }; return fs }
+    /// Aggiunge segnalazioni, dati e misure dei controlli rapidi (marcati `quick`, per poterli rifare da soli dopo un cambio di impostazioni).
+    func absorb(_ o: Collector) {
+        let f = o.findings.map { x -> Finding in var y = x; y.quick = true; return y }, sec = o.sections, fa = o.facts
+        lock.lock(); fs.append(contentsOf: f)
+        for s in sec { var t = secs[s.title] ?? Section(title: s.title, order: s.order, rows: []); t.rows = s.rows.map { var r = $0; r.quick = true; return r } + t.rows; secs[s.title] = t }
+        for (k, v) in fa { fx[k] = v }; lock.unlock()
+    }
     var sections: [Section] { lock.lock(); defer { lock.unlock() }; return Array(secs.values) }
 }

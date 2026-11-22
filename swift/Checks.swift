@@ -96,7 +96,7 @@ func checkAudioStreams(_ pr: Probe, _ c: Collector) {
 
 let imageSubs: Set<String> = ["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub"]
 func checkSubStreams(_ pr: Probe, _ c: Collector) {
-    let ss = pr.subs
+    let ss = pr.subs, hasItalianAudio = pr.audio.contains { lang($0) == "ita" }
     if ss.isEmpty { c.add(.info, "Sottotitoli", "Nessun sottotitolo incorporato", "Se il film non è in italiano serviranno sottotitoli esterni."); return }
     for (i, s) in ss.enumerated() {
         let tg = tags(s); let codec = (s["codec_name"] as? String) ?? "?"; let forced = disp(s, "forced") == 1
@@ -107,9 +107,15 @@ func checkSubStreams(_ pr: Probe, _ c: Collector) {
         c.rows("Sottotitoli \(i + 1)", order: 30 + i, rows)
         let n = "sottotitoli \(i + 1)" + (lang(s).isEmpty ? "" : " (\(langLabel(lang(s)))" + (forced ? ", forzati)" : ")"))
         if lang(s).isEmpty { c.add(.warn, "Sottotitoli", "Lingua non indicata — \(n)", "Impossibile sceglierli in automatico.", fix: [.setLang("s", i)]) }
-        if disp(s, "default") == 1 && !forced { c.add(.warn, "Sottotitoli", "Sottotitoli attivi di default — \(n)", "Compaiono da soli all'avvio: in sala potrebbero apparire senza volerlo.", fix: [.defaultSub(nil)]) }
+        if disp(s, "default") == 1 && !forced {
+            if lang(s) == "ita" && !hasItalianAudio { c.add(.info, "Sottotitoli", "Sottotitoli italiani attivi all'avvio — \(n)", "Giusto così: il film non ha l'audio in italiano, in sala servono.") }
+            else { c.add(.warn, "Sottotitoli", "Sottotitoli attivi di default — \(n)", "Compaiono da soli all'avvio: in sala potrebbero apparire senza volerlo.", fix: [.defaultSub(nil)]) }
+        }
         if imageSubs.contains(codec) { c.add(.info, "Sottotitoli", "Sottotitoli a immagine — \(n)", "Formato \(codec): non si possono controllare nel testo né cambiare dimensione/colore.") }
         if let t = tg["title"]?.lowercased(), (t.contains("forced") || t.contains("forzat")) && !forced { c.add(.warn, "Sottotitoli", "Si chiamano «forzati» ma non sono marcati come tali — \(n)", "Il lettore li tratterà come sottotitoli completi.", fix: [.setForced(i, true)]) }
+    }
+    if !hasItalianAudio, !pr.audio.isEmpty, let k = ss.firstIndex(where: { lang($0) == "ita" && disp($0, "forced") != 1 }), !ss.contains(where: { lang($0) == "ita" && disp($0, "default") == 1 }) {
+        c.add(.info, "Sottotitoli", "Il film non ha l'audio italiano: conviene attivare i sottotitoli italiani all'avvio", "Così in sala compaiono senza doverli scegliere dal menu del lettore.", fix: [.defaultSub(k)])
     }
     let keys = ss.map { lang($0) + ($0["disposition"].flatMap { ($0 as? [String: Any])?["forced"] as? Int } == 1 ? "F" : "") + (tags($0)["title"] ?? "") }
     if Set(keys).count < keys.count { c.add(.info, "Sottotitoli", "Tracce di sottotitoli duplicate", "Due tracce con stessa lingua, tipo e nome.") }

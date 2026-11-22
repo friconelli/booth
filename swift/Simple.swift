@@ -271,6 +271,7 @@ struct JobDetail: View {
                 Button("Correggi a mano…") { sheetPlan = FixPlan() }
                 if job.hasCorrected { Divider(); Button("Confronta prima e dopo…") { showCompare = true }; Button("Mostra nel Finder") { NSWorkspace.shared.activateFileViewerSelecting([job.url]) }; Button("Elimina la copia corretta…") { store.discardCorrected(job) } }
                 Divider()
+                Button("Trova i sottotitoli online…") { store.findSubtitles(job) }
                 Button("Dati del film online…") { store.askOnline(force: true) }
             } label: { Image(systemName: "ellipsis.circle").font(.title3) }.menuStyle(.borderlessButton).frame(width: 34).disabled(job.fixProgress != nil)
         }

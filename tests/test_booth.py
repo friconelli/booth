@@ -321,6 +321,31 @@ try:
     other = film("altro_film.mkv", "640x360", "24000/1001", f"anoisesrc=d={DM}:c=brown:a=0.5:r=48000,{gate(55.55, 6)},aformat=channel_layouts=stereo", "ita", DM)
     rc, o = merge(best, other, "--audio", "b0", "--output", os.path.join(T, "altro.mkv"))
     check(rc != 0 and "NON ALLINEATO" in o and not os.path.exists(os.path.join(T, "altro.mkv")), "film diverso: unione rifiutata, nessun file creato")
+
+    print("== impostazioni: rilettura rapida e sottotitoli esterni")
+    for f in (os.path.join(T, "pulito.mkv"), video("titolo.mp4", meta=["title=Film.2001.1080p-YTS"])):
+        r = subprocess.run([BIN, "--refresh-check", f], capture_output=True, text=True)
+        check(r.returncode == 0 and "uguali" in r.stdout, f"rilettura rapida dopo un cambio di impostazioni = analisi completa ({os.path.basename(f)}: {r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr[-200:]})")
+    r = subprocess.run([BIN, "--hash", os.path.join(T, "pulito.mkv")], capture_output=True, text=True)
+    import struct
+    def oshash(f):
+        n = os.path.getsize(f); h = n
+        with open(f, "rb") as fh:
+            for off in (0, n - 65536): fh.seek(off); h = (h + sum(x for (x,) in struct.iter_unpack("<Q", fh.read(65536)))) & 0xFFFFFFFFFFFFFFFF
+        return "%016x" % h
+    check(r.stdout.strip() == oshash(os.path.join(T, "pulito.mkv")), "impronta OpenSubtitles del file (moviehash)")
+    open(os.path.join(T, "esterni.srt"), "wb").write("1\n00:00:01,000 --> 00:00:03,000\nPerché è così\n".encode("cp1252"))
+    shutil.copy(os.path.join(T, "pulito.mkv"), os.path.join(T, "esterno.mkv"))
+    rc, o = fixcopy(os.path.join(T, "esterno.mkv"), "--add-sub", os.path.join(T, "esterni.srt") + ":ita"); out = os.path.join(T, "esterno (corretto).mkv")
+    subs = [x for x in probe(out)["streams"] if x["codec_type"] == "subtitle"] if os.path.exists(out) else []
+    txt = subprocess.run(["ffmpeg", "-v", "error", "-i", out, "-map", "0:s:1", "-f", "srt", "-"], capture_output=True, text=True).stdout if len(subs) == 2 else ""
+    check(rc == 0 and len(subs) == 2 and subs[1].get("disposition", {}).get("default") == 0 and "Perché è così" in txt, "sottotitoli esterni (Windows-1252) aggiunti come traccia in più, in UTF-8 e non predefiniti")
+    rc, o = fixcopy(os.path.join(T, "titolo.mp4"), "--add-sub", os.path.join(T, "esterni.srt") + ":ita"); m4 = os.path.join(T, "titolo (corretto).mp4")
+    s4 = [x for x in probe(m4)["streams"] if x["codec_type"] == "subtitle"] if os.path.exists(m4) else []
+    check(rc == 0 and len(s4) == 1 and s4[0]["disposition"]["default"] == 0, "mp4: sottotitoli aggiunti e spenti all'avvio (flag della traccia corretto nell'intestazione)")
+    rc, o = fixcopy(os.path.join(T, "titolo.mp4"), "--add-sub", os.path.join(T, "esterni.srt") + ":ita:default:pos=0.2", "--output-ext", "mkv", "--output", os.path.join(T, "titolo-alto.mkv")); mk = os.path.join(T, "titolo-alto.mkv")
+    ass = subprocess.run(["ffmpeg", "-v", "error", "-i", mk, "-map", "0:s:0", "-f", "ass", "-"], capture_output=True, text=True).stdout if os.path.exists(mk) else ""
+    check(rc == 0 and any(l.startswith("Style: Default") and l.endswith(",72,1") for l in ass.splitlines()), "mp4 → mkv con i sottotitoli alzati sopra quelli impressi (ASS, margine dal basso 20%)")
 finally:
     shutil.rmtree(T, ignore_errors=True)
 print(f"\n{ok} controlli ok, {bad} falliti"); sys.exit(1 if bad else 0)
